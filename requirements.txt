@@ -1,0 +1,10 @@
+streamlit
+pandas
+requests
+plotly
+numpy
+ipykernel
+selenium
+scikit-learn
+xgboost
+tensorflow

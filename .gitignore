@@ -1,8 +1,7 @@
 #### Data Ignore ####
-*.zip
-*.txt
-*.pdf
-*.csv
+# Ignore everything in data folder except names.db
+data/*
+!data/names.db
 
 #### Streamlit Ignore ####
 .streamlit/

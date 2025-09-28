@@ -3,9 +3,14 @@ pandas
 requests
 plotly
 matplotlib
+nbformat
 numpy
+huggingface_hub
+hf_xet
 ipykernel
 selenium
+sentence_transformers
+faiss-cpu
 scikit-learn
 statsmodels
 xgboost

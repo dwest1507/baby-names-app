@@ -12,6 +12,7 @@ selenium
 sentence_transformers
 faiss-cpu
 scikit-learn
+scipy
 statsmodels
 xgboost
 tensorflow

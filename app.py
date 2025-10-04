@@ -723,7 +723,7 @@ def top_names_page():
         height=600
     )
     
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig, use_container_width=True)
     
     # Display top names table
     st.subheader("Top Names Data")
@@ -759,8 +759,8 @@ def search_page():
                 if ranking_result:
                     if ranking_result[0] is not None:
                         ranking_fig, popularity_fig, current_ranking, current_popularity = ranking_result
-                        st.plotly_chart(ranking_fig, width='stretch')
-                        st.plotly_chart(popularity_fig, width='stretch')
+                        st.plotly_chart(ranking_fig, use_container_width=True)
+                        st.plotly_chart(popularity_fig, use_container_width=True)
             
             with col2:
                 # Show year-by-year data
@@ -799,7 +799,7 @@ def search_page():
             # Combined trend chart with ARIMA projection and validation
             combined_chart = create_combined_trend_chart(search_df, search_name, sex, type='percent')
             if combined_chart:
-                st.plotly_chart(combined_chart, width='stretch')
+                st.plotly_chart(combined_chart, use_container_width=True)
             
             # Robust ARIMA Model Performance Metrics
             if len(search_df) >= 10:  # Need at least 10 years for meaningful validation

@@ -22,6 +22,8 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 from scipy import stats
 import warnings
 warnings.filterwarnings('ignore')
+from groq import Groq
+import re
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -659,7 +661,8 @@ def main_page():
     """A description of the app, it's purpose and how to use it"""
     st.title("👶 Baby Names Popularity Explorer")
     st.markdown("Explore the popularity of baby names from the Social Security Administration dataset")
-    st.markdown("This app allows you to search for specific baby names and view their popularity metrics and projections")
+    st.markdown("This app allows you to ask the AI Chatbot any questions about the baby names database in natural language")
+    st.markdown("Search for specific baby names and view their popularity metrics and projections")
     st.markdown("You can also view the top names by year and gender")
     st.markdown("The data is sourced from the [Social Security Administration's baby names database](https://www.ssa.gov/oact/babynames/limits.html)")
     st.markdown("The data is updated yearly")
@@ -908,11 +911,384 @@ def name_origin_page():
     # TODO: Use the API for https://namsor.app/ to get the origin of a name
     
 
+def get_groq_client():
+    """Get Groq client with API key from environment or secrets"""
+    api_key = None
+    try:
+        # Try Streamlit secrets first
+        api_key = st.secrets.get("GROQ_API_KEY")
+    except:
+        pass
+    
+    if not api_key:
+        # Fall back to environment variable
+        api_key = os.environ.get("GROQ_API_KEY")
+    
+    if not api_key:
+        st.error("GROQ_API_KEY not found. Please set it in environment variables or .streamlit/secrets.toml")
+        return None
+    
+    return Groq(api_key=api_key)
+
+
+def validate_sql_query(query):
+    """Validate SQL query for safety - only SELECT statements allowed"""
+    if not query:
+        return False, "Empty query"
+    
+    # Strip whitespace and convert to uppercase for checking
+    query_upper = query.strip().upper()
+    
+    # Check that it starts with SELECT
+    if not query_upper.startswith("SELECT"):
+        return False, "Only SELECT queries are allowed"
+    
+    # Check for dangerous keywords
+    dangerous_keywords = ["DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "CREATE", "TRUNCATE", "EXEC", "EXECUTE"]
+    for keyword in dangerous_keywords:
+        if keyword in query_upper:
+            return False, f"Query contains forbidden keyword: {keyword}"
+    
+    # Check for LIMIT clause
+    if "LIMIT" not in query_upper:
+        # Add LIMIT if not present
+        # Try to find where to add it (before any semicolon or at the end)
+        if query.rstrip().endswith(";"):
+            query = query.rstrip()[:-1].rstrip() + " LIMIT 1000;"
+        else:
+            query = query.rstrip() + " LIMIT 1000"
+    
+    return True, query
+
+
+def execute_safe_sql(query, max_rows=1000):
+    """Execute a SQL query safely with row limit"""
+    # Validate query first
+    is_valid, result = validate_sql_query(query)
+    if not is_valid:
+        return None, result
+    
+    # Use the validated query (may have LIMIT added)
+    query = result
+    
+    # Ensure LIMIT doesn't exceed max_rows
+    query_upper = query.upper()
+    limit_match = re.search(r'LIMIT\s+(\d+)', query_upper)
+    if limit_match:
+        limit_value = int(limit_match.group(1))
+        if limit_value > max_rows:
+            query = re.sub(r'LIMIT\s+\d+', f'LIMIT {max_rows}', query, flags=re.IGNORECASE)
+    else:
+        # Add LIMIT if somehow missing
+        if query.rstrip().endswith(";"):
+            query = query.rstrip()[:-1].rstrip() + f" LIMIT {max_rows};"
+        else:
+            query = query.rstrip() + f" LIMIT {max_rows}"
+    
+    try:
+        conn = sqlite3.connect("data/names.db")
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+        
+        # Double-check row limit
+        if len(df) > max_rows:
+            df = df.head(max_rows)
+        
+        return df, None
+    except Exception as e:
+        return None, str(e)
+
+
+def generate_sql_from_question(question, conversation_history):
+    """Use Groq to generate SQL query from natural language question"""
+    client = get_groq_client()
+    if not client:
+        return None, "Groq client not available"
+    
+    # Database schema information
+    schema_context = """
+Database Schema:
+- Table: names
+- Columns:
+  - name (TEXT): Baby name
+  - sex (TEXT): 'M' for Male or 'F' for Female
+  - total_count (INTEGER): Number of babies with this name in the given year
+  - year (INTEGER): Year (1880-2024)
+  - popularity_percent (REAL): Percentage of babies with this name for the given sex/year
+  - popularity_rank (INTEGER): Ranking of the name for the given sex/year (1 = most popular)
+
+Important Guidelines:
+- Prefer aggregation queries with GROUP BY, SUM, COUNT, AVG, etc. when summarizing data
+- Always include a LIMIT clause (max 1000 rows)
+- Use appropriate WHERE clauses to filter data
+- For name searches, use LOWER() function for case-insensitive matching
+"""
+    
+    # Build conversation context
+    messages = [
+        {
+            "role": "system",
+            "content": f"""You are a SQL query generator. Your task is to translate natural language questions about a baby names database into SQL queries.
+
+{schema_context}
+
+Rules:
+1. Only generate SELECT queries
+2. Always include LIMIT 1000 in your queries
+3. Prefer using aggregations (GROUP BY, SUM, COUNT, AVG, MAX, MIN) to summarize data rather than returning large result sets
+4. Return only the SQL query, no explanation or markdown formatting
+5. Use proper SQL syntax for SQLite
+"""
+        }
+    ]
+    
+    # Add conversation history for context
+    if conversation_history:
+        for entry in conversation_history[-4:]:  # Last 4 exchanges for context
+            if "user" in entry:
+                messages.append({"role": "user", "content": entry["user"]})
+            if "sql" in entry:
+                messages.append({"role": "assistant", "content": f"SQL: {entry['sql']}"})
+    
+    # Add current question
+    messages.append({"role": "user", "content": question})
+    
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=messages,
+            temperature=0.1,
+            max_tokens=500
+        )
+        
+        sql_query = response.choices[0].message.content.strip()
+        
+        # Clean up the SQL query (remove markdown code blocks if present)
+        sql_query = re.sub(r'^```sql\s*', '', sql_query)
+        sql_query = re.sub(r'^```\s*', '', sql_query)
+        sql_query = re.sub(r'\s*```\s*$', '', sql_query)
+        sql_query = sql_query.strip()
+        
+        return sql_query, None
+    except Exception as e:
+        return None, str(e)
+
+
+def generate_answer_from_results(question, sql_query, query_results, conversation_history):
+    """Use Groq to generate natural language answer from SQL query results"""
+    client = get_groq_client()
+    if not client:
+        return None, "Groq client not available"
+    
+    # Format query results as text
+    if query_results is None or query_results.empty:
+        results_text = "No results returned from the query."
+    else:
+        # Convert DataFrame to a readable format
+        results_text = query_results.to_string(index=False)
+        if len(results_text) > 5000:  # Truncate if too long
+            results_text = results_text[:5000] + "\n... (truncated)"
+    
+    # Build conversation context
+    messages = [
+        {
+            "role": "system",
+            "content": """You are a helpful assistant that answers questions about baby names data from the Social Security Administration database. 
+You analyze SQL query results and provide clear, concise answers to user questions.
+Always format numbers nicely (e.g., use commas for large numbers).
+Be conversational and helpful, but stay accurate to the data.
+"""
+        }
+    ]
+    
+    # Add conversation history for context
+    if conversation_history:
+        for entry in conversation_history[-4:]:  # Last 4 exchanges for context
+            if "user" in entry:
+                messages.append({"role": "user", "content": entry["user"]})
+            if "assistant" in entry:
+                messages.append({"role": "assistant", "content": entry["assistant"]})
+    
+    # Add current question and results
+    messages.append({
+        "role": "user",
+        "content": f"""Question: {question}
+
+SQL Query Executed:
+{sql_query}
+
+Query Results:
+{results_text}
+
+Please answer the user's question based on the query results above. Be concise and helpful."""
+    })
+    
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=messages,
+            temperature=0.3,
+            max_tokens=1000
+        )
+        
+        answer = response.choices[0].message.content.strip()
+        return answer, None
+    except Exception as e:
+        return None, str(e)
+
+
+def chatbot_page():
+    """AI Chatbot page for querying the names database"""
+    st.title("💬 AI Chatbot")
+    st.markdown("Ask questions about the baby names database in natural language. The AI will translate your questions into SQL queries and provide answers based on the data.")
+    
+    # Suggested prompts
+    suggested_prompts = [
+        "What years do you have baby name data for?",
+        "What were the top 10 most popular boy names in 2024?",
+        "What are the most popular baby names over the past 10 years?",
+        "What popularity is the name Oliver currently at?",
+        "Is the name David increasing in popularity?",
+        "Which baby names have risen in popularity the fastest over the past 10 years?"
+    ]
+    
+    # Initialize chat history in session state
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+    
+    # Show suggested prompts if no chat history
+    if len(st.session_state.chat_history) == 0:
+        st.markdown("### 💡 Try asking:")
+        # Display prompts in a grid layout
+        cols = st.columns(2)
+        for idx, prompt in enumerate(suggested_prompts):
+            col = cols[idx % 2]
+            if col.button(prompt, key=f"suggest_{idx}", use_container_width=True):
+                # Add the prompt as if user typed it
+                st.session_state.chat_history.append({"user": prompt})
+                st.rerun()
+    
+    # Display chat history
+    for entry in st.session_state.chat_history:
+        # User message
+        with st.chat_message("user"):
+            st.write(entry["user"])
+        
+        # Assistant response with SQL query
+        with st.chat_message("assistant"):
+            # Display SQL query in expandable section if available
+            if "sql" in entry and entry["sql"]:
+                with st.expander("📊 View SQL Query", expanded=False):
+                    st.code(entry["sql"], language="sql")
+            
+            # Display assistant answer if available
+            if "assistant" in entry:
+                st.write(entry["assistant"])
+            
+            # Display error if any
+            if "error" in entry and entry["error"]:
+                st.error(f"Error: {entry['error']}")
+                # Show raw results if available as fallback
+                if "raw_results" in entry and entry["raw_results"] is not None:
+                    st.write("Query Results:")
+                    st.dataframe(entry["raw_results"], use_container_width=True)
+    
+    # Check if there's an unprocessed message (from button click)
+    if (len(st.session_state.chat_history) > 0 and 
+        "assistant" not in st.session_state.chat_history[-1] and 
+        "user" in st.session_state.chat_history[-1]):
+        # Process the query from button click
+        prompt = st.session_state.chat_history[-1]["user"]
+        
+        # Process the query
+        # Generate SQL query
+        sql_query, sql_error = generate_sql_from_question(prompt, st.session_state.chat_history)
+        
+        if sql_error:
+            st.session_state.chat_history[-1]["sql"] = None
+            st.session_state.chat_history[-1]["assistant"] = "I couldn't generate a SQL query. Please try rephrasing your question."
+            st.session_state.chat_history[-1]["error"] = sql_error
+            st.rerun()
+        
+        # Execute SQL query
+        query_results, exec_error = execute_safe_sql(sql_query)
+        
+        if exec_error:
+            st.session_state.chat_history[-1]["sql"] = sql_query
+            st.session_state.chat_history[-1]["assistant"] = "I encountered an error executing the SQL query."
+            st.session_state.chat_history[-1]["error"] = exec_error
+            st.rerun()
+        
+        # Generate answer from results
+        answer, answer_error = generate_answer_from_results(
+            prompt, sql_query, query_results, st.session_state.chat_history
+        )
+        
+        if answer_error:
+            st.session_state.chat_history[-1]["sql"] = sql_query
+            st.session_state.chat_history[-1]["assistant"] = "I encountered an error generating the answer."
+            st.session_state.chat_history[-1]["error"] = answer_error
+            # Show raw results as fallback in the error entry
+            if query_results is not None and not query_results.empty:
+                st.session_state.chat_history[-1]["raw_results"] = query_results
+            st.rerun()
+        
+        # Update history with successful response
+        st.session_state.chat_history[-1]["sql"] = sql_query
+        st.session_state.chat_history[-1]["assistant"] = answer
+        st.session_state.chat_history[-1]["error"] = None
+        st.rerun()
+    
+    # Chat input
+    if prompt := st.chat_input("Ask a question about baby names..."):
+        # Add user message to history
+        st.session_state.chat_history.append({"user": prompt})
+        
+        # Process the query
+        # Generate SQL query
+        sql_query, sql_error = generate_sql_from_question(prompt, st.session_state.chat_history)
+        
+        if sql_error:
+            st.session_state.chat_history[-1]["sql"] = None
+            st.session_state.chat_history[-1]["assistant"] = "I couldn't generate a SQL query. Please try rephrasing your question."
+            st.session_state.chat_history[-1]["error"] = sql_error
+            st.rerun()
+        
+        # Execute SQL query
+        query_results, exec_error = execute_safe_sql(sql_query)
+        
+        if exec_error:
+            st.session_state.chat_history[-1]["sql"] = sql_query
+            st.session_state.chat_history[-1]["assistant"] = "I encountered an error executing the SQL query."
+            st.session_state.chat_history[-1]["error"] = exec_error
+            st.rerun()
+        
+        # Generate answer from results
+        answer, answer_error = generate_answer_from_results(
+            prompt, sql_query, query_results, st.session_state.chat_history
+        )
+        
+        if answer_error:
+            st.session_state.chat_history[-1]["sql"] = sql_query
+            st.session_state.chat_history[-1]["assistant"] = "I encountered an error generating the answer."
+            st.session_state.chat_history[-1]["error"] = answer_error
+            # Show raw results as fallback in the error entry
+            if query_results is not None and not query_results.empty:
+                st.session_state.chat_history[-1]["raw_results"] = query_results
+            st.rerun()
+        
+        # Update history with successful response
+        st.session_state.chat_history[-1]["sql"] = sql_query
+        st.session_state.chat_history[-1]["assistant"] = answer
+        st.session_state.chat_history[-1]["error"] = None
+        st.rerun()
+
+
 def main():
     """Main function with page navigation"""
     # Sidebar navigation
     st.sidebar.title("Navigation")
-    page = st.sidebar.radio("Go to", ["🏠 Home", "👶 Top Names","🔍 Name Search"])
+    page = st.sidebar.radio("Go to", ["🏠 Home", "💬 AI Chatbot", "🔍 Name Search", "👶 Top Names"])
     
     # Route to appropriate page
     if page == "🏠 Home":
@@ -921,6 +1297,8 @@ def main():
         top_names_page()
     elif page == "🔍 Name Search":
         search_page()
+    elif page == "💬 AI Chatbot":
+        chatbot_page()
 
     # Footer
     st.sidebar.markdown("---")

@@ -1014,6 +1014,10 @@ def name_origin_page():
     # TODO: Use the API for https://namsor.app/ to get the origin of a name
     
 
+# Groq model used for the chatbot (SQL generation and answer synthesis)
+GROQ_MODEL = "openai/gpt-oss-120b"
+
+
 def get_groq_client():
     """Get Groq client with API key from environment or secrets"""
     api_key = None
@@ -1158,10 +1162,11 @@ Rules:
     
     try:
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL,
             messages=messages,
             temperature=0.1,
-            max_tokens=500
+            # gpt-oss is a reasoning model: reasoning tokens count toward this budget
+            max_tokens=2000
         )
         
         sql_query = response.choices[0].message.content.strip()
@@ -1228,10 +1233,11 @@ Please answer the user's question based on the query results above. Be concise a
     
     try:
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL,
             messages=messages,
             temperature=0.3,
-            max_tokens=1000
+            # gpt-oss is a reasoning model: reasoning tokens count toward this budget
+            max_tokens=3000
         )
         
         answer = response.choices[0].message.content.strip()

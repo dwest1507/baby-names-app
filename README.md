@@ -105,6 +105,52 @@ The `app.py` provides:
 - **Comparison Tools**: Compare multiple names side by side
 - **Interactive Charts**: Built with Plotly for rich visualizations
 
+## Deployment
+
+The app reads every page from a SQLite database. Before deploying, make sure that
+database is actually reachable in the deployed environment.
+
+### The database is not in the Git checkout
+
+`data/names.db` is tracked with Git LFS (see `.gitattributes`), and the object is
+roughly 1.1 GB. **Streamlit Community Cloud clones repositories without resolving Git
+LFS objects**, so the deployed checkout contains only a 135-byte pointer file rather
+than the database. Reading it raises `DatabaseError: file is not a database`.
+
+The app now detects this at startup and stops with an explanatory message instead of
+failing deep inside a query.
+
+### Supplying the database
+
+Point the app at a copy it can actually read, using either Streamlit secrets
+(`.streamlit/secrets.toml`) or environment variables:
+
+| Setting | Purpose | Default |
+| --- | --- | --- |
+| `NAMES_DB_PATH` | Path to a local `names.db` | `data/names.db` |
+| `NAMES_DB_REPO` | Hugging Face repo to download the database from when no local copy is usable | unset |
+| `NAMES_DB_FILE` | Filename to fetch from that repo | `names.db` |
+| `NAMES_DB_REPO_TYPE` | `dataset` or `model` | `dataset` |
+| `HF_TOKEN` | Token for a private Hugging Face repo | unset |
+| `GROQ_API_KEY` | Required for the AI Chatbot page | unset |
+
+Example `.streamlit/secrets.toml`:
+
+```toml
+NAMES_DB_REPO = "your-username/baby-names"
+NAMES_DB_FILE = "names.db"
+GROQ_API_KEY = "your-key"
+```
+
+The download is cached with `st.cache_resource`, so it runs once per app process.
+
+### A note on database size
+
+Streamlit Community Cloud gives each app a limited amount of disk and memory, and a
+1.1 GB database is likely to exceed it even when downloaded at runtime. The app only
+queries a single `names` table with six columns, so rebuilding a slimmer database
+(dropping unused tables and indexes) is the more durable fix.
+
 ## Data Structure
 
 The processed data includes:

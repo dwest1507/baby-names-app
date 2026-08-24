@@ -37,10 +37,113 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# --- Baby names database resolution --------------------------------------
+
+DEFAULT_DB_PATH = "data/names.db"
+SQLITE_MAGIC = b"SQLite format 3\x00"
+LFS_POINTER_MAGIC = b"version https://git-lfs.github.com/spec/v1"
+
+
+class DatabaseUnavailableError(RuntimeError):
+    """Raised when names.db cannot be resolved to a readable SQLite database"""
+
+
+def get_config_value(key):
+    """Get a setting from Streamlit secrets, falling back to environment variables"""
+    value = None
+    try:
+        # Try Streamlit secrets first
+        value = st.secrets.get(key)
+    except Exception:
+        pass
+
+    if not value:
+        value = os.environ.get(key)
+
+    return value
+
+
+def describe_db_problem(path):
+    """Describe why the file at path is not a usable database, or return None if it is"""
+    if not os.path.exists(path):
+        return f"No file was found at `{path}`."
+
+    with open(path, "rb") as handle:
+        head = handle.read(256)
+
+    if head.startswith(LFS_POINTER_MAGIC):
+        match = re.search(rb"^size (\d+)$", head, flags=re.MULTILINE)
+        expected = f" The real object is {int(match.group(1)) / 1e9:.2f} GB." if match else ""
+        return (
+            f"`{path}` is a Git LFS pointer of {os.path.getsize(path)} bytes rather than the "
+            f"database itself.{expected} Streamlit Community Cloud checks out repositories "
+            "without resolving Git LFS objects, so only the pointer text is present."
+        )
+
+    if not head.startswith(SQLITE_MAGIC):
+        return f"`{path}` is not a SQLite database - its file header is unrecognized."
+
+    return None
+
+
+@st.cache_resource(show_spinner="Loading the baby names database...")
+def resolve_database_path():
+    """Find a readable copy of names.db, downloading it when a remote source is configured"""
+    local_path = get_config_value("NAMES_DB_PATH") or DEFAULT_DB_PATH
+    problem = describe_db_problem(local_path)
+    if problem is None:
+        return local_path
+
+    repo_id = get_config_value("NAMES_DB_REPO")
+    if not repo_id:
+        raise DatabaseUnavailableError(
+            f"{problem}\n\nEither commit a real `{DEFAULT_DB_PATH}` (Git LFS will not work on "
+            "Streamlit Community Cloud), point `NAMES_DB_PATH` at a local copy, or set "
+            "`NAMES_DB_REPO` so the database is downloaded at startup."
+        )
+
+    filename = get_config_value("NAMES_DB_FILE") or "names.db"
+    try:
+        from huggingface_hub import hf_hub_download
+
+        downloaded = hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            repo_type=get_config_value("NAMES_DB_REPO_TYPE") or "dataset",
+            token=get_config_value("HF_TOKEN"),
+        )
+    except Exception as e:
+        raise DatabaseUnavailableError(
+            f"{problem}\n\nDownloading `{filename}` from `{repo_id}` failed: {e}"
+        ) from e
+
+    problem = describe_db_problem(downloaded)
+    if problem is not None:
+        raise DatabaseUnavailableError(f"The downloaded database is unusable. {problem}")
+
+    logger.info("Using baby names database downloaded from %s", repo_id)
+    return downloaded
+
+
+def connect_to_database():
+    """Open a connection to the baby names database"""
+    return sqlite3.connect(resolve_database_path())
+
+
+def require_database():
+    """Halt the app with an actionable message when the database cannot be loaded"""
+    try:
+        resolve_database_path()
+    except DatabaseUnavailableError as e:
+        st.error("The baby names database is unavailable, so the app cannot start.")
+        st.markdown(str(e))
+        st.stop()
+
+
 @st.cache_data
 def load_top_names_data(sex, top_n, year):
     """Load and aggregate the baby names data for top names"""
-    conn = sqlite3.connect("data/names.db")
+    conn = connect_to_database()
     df = pd.read_sql_query(f"SELECT * FROM names WHERE sex = '{sex}' AND year = {year} ORDER BY total_count DESC LIMIT {top_n}", conn)
     conn.close()
     return df
@@ -48,7 +151,7 @@ def load_top_names_data(sex, top_n, year):
 @st.cache_data
 def load_name_search_data(name, sex):
     """Load and aggregate the baby names data for name search"""
-    conn = sqlite3.connect("data/names.db")
+    conn = connect_to_database()
     df = pd.read_sql_query(f"SELECT * FROM names WHERE LOWER(name) = LOWER('{name}') AND sex = '{sex}'", conn)
     conn.close()
     return df
@@ -705,7 +808,7 @@ def top_names_page():
         st.stop()
     
     # Top names section
-    st.header(f"Top {top_n} {"Male" if sex == "M" else "Female"} Names")
+    st.header(f"Top {top_n} {'Male' if sex == 'M' else 'Female'} Names")
     
     # Get top names
     top_names = top_names_df[top_names_df['sex'] == sex].head(top_n)
@@ -715,7 +818,7 @@ def top_names_page():
         top_names,
         x='name',
         y='total_count',
-        title=f"Top {top_n} {"Male" if sex == "M" else "Female"} Names by Total Count",
+        title=f"Top {top_n} {'Male' if sex == 'M' else 'Female'} Names by Total Count",
         labels={'total_count': 'Total Count', 'name': 'Name'},
         color='total_count',
         color_continuous_scale='Viridis'
@@ -986,7 +1089,7 @@ def execute_safe_sql(query, max_rows=1000):
             query = query.rstrip() + f" LIMIT {max_rows}"
     
     try:
-        conn = sqlite3.connect("data/names.db")
+        conn = connect_to_database()
         df = pd.read_sql_query(query, conn)
         conn.close()
         
@@ -1286,6 +1389,9 @@ def chatbot_page():
 
 def main():
     """Main function with page navigation"""
+    # Every page reads from the database, so fail fast with a clear message
+    require_database()
+
     # Sidebar navigation
     st.sidebar.title("Navigation")
     page = st.sidebar.radio("Go to", ["🏠 Home", "💬 AI Chatbot", "🔍 Name Search", "👶 Top Names"])

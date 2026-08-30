@@ -229,6 +229,19 @@ The machine learning pipeline provides comprehensive model evaluation:
 - **Model Comparison**: Side-by-side comparison of all trained models
 - **Visualization**: Charts showing prediction accuracy and feature importance
 
+## Versioning
+
+This project uses [Release Please](https://github.com/googleapis/release-please) for
+automated versioning and changelog generation.
+
+1. **Develop:** merge changes into `main` using
+   [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, ...).
+2. **Release PR:** the `Release Please` workflow opens a PR bumping `version.txt` and
+   updating `CHANGELOG.md`.
+3. **Merge:** merging that PR creates the git tag and the GitHub Release.
+
+The current version lives in `version.txt`; the release history is in `CHANGELOG.md`.
+
 ## License
 
 This project is for educational purposes. Please respect the SSA's terms of use for their data.

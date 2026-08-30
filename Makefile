@@ -1,5 +1,5 @@
 .PHONY: help install dev dev-frontend dev-backend sample-db test lint format clean stop \
-	frontend-quality frontend-test frontend-build backend-lint backend-test \
+	frontend-quality frontend-test frontend-build backend-lint backend-test frontend-deps \
 	security-audit lighthouse ci-cd
 
 help:
@@ -33,13 +33,27 @@ install:
 	@echo "Installing frontend dependencies..."
 	cd frontend && npm install
 
-dev-frontend:
+# Reinstall frontend deps when node_modules is missing (e.g. after `make clean`)
+# or when package-lock.json has actually changed. The stamp records the lockfile's
+# hash rather than its mtime, so `git checkout`/`git pull` touching the file does
+# not trigger a needless full reinstall.
+frontend-deps:
+	@cd frontend && \
+	  stamp=node_modules/.deps-stamp; \
+	  want=$$(sha256sum package-lock.json | cut -d' ' -f1); \
+	  if [ ! -d node_modules ] || [ ! -f "$$stamp" ] || [ "$$(cat "$$stamp")" != "$$want" ]; then \
+	    echo "Frontend dependencies missing or stale; running npm ci..."; \
+	    npm ci && printf '%s' "$$want" > "$$stamp"; \
+	  fi
+
+dev-frontend: frontend-deps
 	cd frontend && npm run dev
 
+# The backend needs no equivalent rule: `uv run` syncs .venv from uv.lock itself.
 dev-backend:
 	cd backend && uv run uvicorn app.main:app --reload --port 8000
 
-dev:
+dev: frontend-deps
 	@echo "Starting full stack... (Press Ctrl+C to stop)"
 	@$(MAKE) -j2 dev-frontend dev-backend
 

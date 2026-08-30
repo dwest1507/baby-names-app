@@ -1,0 +1,9 @@
+# Local databases (the real names.db lives at the repo root under Git LFS)
+data/
+
+# Environments and caches
+.venv/
+.env
+__pycache__/
+.pytest_cache/
+.ruff_cache/

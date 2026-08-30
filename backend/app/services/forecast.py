@@ -213,8 +213,8 @@ def forecast_name(name: str, sex: str) -> dict | None:
 
     try:
         forecast = _forecast(model, log_applied, FORECAST_YEARS)
-    except Exception as e:
-        logger.warning("ARIMA forecasting failed for %s (%s): %s", name, sex, e)
+    except Exception:
+        logger.warning("ARIMA forecasting failed", exc_info=True)
         return payload
 
     last_year = years[-1]

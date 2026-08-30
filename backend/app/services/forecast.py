@@ -12,12 +12,20 @@ from functools import lru_cache
 import numpy as np
 from scipy import stats
 from statsmodels.stats.diagnostic import acorr_ljungbox, het_arch
+from statsmodels.tools.sm_exceptions import ModelWarning
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.stattools import adfuller, kpss
 
 from . import queries
 
-warnings.filterwarnings("ignore")
+# Grid-searching ARIMA orders makes statsmodels complain constantly about
+# non-convergence, non-invertible starting parameters and the like; those are
+# expected here since poor fits are simply discarded by the AICc search. Keep
+# the suppression scoped to statsmodels so warnings from the rest of the app
+# still surface.
+warnings.filterwarnings("ignore", category=ModelWarning)
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"statsmodels\..*")
+
 logger = logging.getLogger(__name__)
 
 FORECAST_YEARS = 5
@@ -43,7 +51,12 @@ def _check_stationarity(series: np.ndarray) -> tuple[bool, float, float]:
     if len(series) < 4:
         return False, 1.0, 1.0
 
-    adf_pvalue = adfuller(series, autolag="AIC")[1]
+    # Both tests reject degenerate input (a constant series raises outright), and
+    # differencing in _find_optimal_differencing can easily produce one.
+    try:
+        adf_pvalue = adfuller(series, autolag="AIC")[1]
+    except Exception:
+        adf_pvalue = 1.0
     try:
         kpss_pvalue = kpss(series, regression="c", nlags="auto")[1]
     except Exception:

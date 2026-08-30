@@ -23,7 +23,8 @@ Database Schema:
   - sex (TEXT): 'M' for Male or 'F' for Female
   - total_count (INTEGER): Number of babies with this name in the given year
   - year (INTEGER): Year (1880-2024)
-  - popularity_percent (REAL): Percentage of babies with this name for the given sex/year
+  - popularity_percent (REAL): Fraction (NOT a percentage) of babies of that sex born that
+    year who were given this name. Multiply by 100 for a percentage: 0.011 means 1.1%.
   - popularity_rank (INTEGER): Ranking of the name for the given sex/year (1 = most popular)
 
 Important Guidelines:
@@ -51,6 +52,8 @@ ANSWER_SYSTEM_PROMPT = """You are a helpful assistant that answers questions abo
 names data from the Social Security Administration database.
 You analyze SQL query results and provide clear, concise answers to user questions.
 Always format numbers nicely (e.g., use commas for large numbers).
+`popularity_percent` is a fraction, not a percentage: multiply it by 100 before reporting
+it as a percentage (0.011 is 1.1%).
 Be conversational and helpful, but stay accurate to the data.
 """
 

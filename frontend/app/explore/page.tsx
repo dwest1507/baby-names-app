@@ -18,6 +18,9 @@ export default function ExplorePage() {
   const [year, setYear] = useState(2024)
   const [limit, setLimit] = useState(20)
   const [yearRange, setYearRange] = useState({ min_year: 1880, max_year: 2024 })
+  // The input keeps its own draft so a half-typed year ("19") does not get
+  // clamped away mid-edit; `year` only advances to values the API accepts.
+  const [yearDraft, setYearDraft] = useState('2024')
 
   // Result is tagged with the filter key it was fetched for; a mismatch means loading.
   const filterKey = `${sex}-${year}-${limit}`
@@ -32,6 +35,7 @@ export default function ExplorePage() {
       .then((meta) => {
         setYearRange(meta)
         setYear(meta.max_year)
+        setYearDraft(String(meta.max_year))
       })
       .catch(() => {
         // Fall back to defaults; the top-names request will surface real errors
@@ -89,11 +93,15 @@ export default function ExplorePage() {
             className={`${inputClass} w-28`}
             min={yearRange.min_year}
             max={yearRange.max_year}
-            value={year}
+            value={yearDraft}
             onChange={(e) => {
+              setYearDraft(e.target.value)
               const next = Number(e.target.value)
-              if (!Number.isNaN(next)) setYear(next)
+              if (e.target.value === '' || Number.isNaN(next)) return
+              if (next < yearRange.min_year || next > yearRange.max_year) return
+              setYear(next)
             }}
+            onBlur={() => setYearDraft(String(year))}
           />
         </div>
         <div>

@@ -5,16 +5,14 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 from .. import database
+from ..limiter import limiter
 from ..services import chatbot
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-limiter = Limiter(key_func=get_remote_address)
 
 
 class HistoryEntry(BaseModel):

@@ -9,7 +9,12 @@ load_dotenv()
 GROQ_API_KEY: str | None = os.environ.get("GROQ_API_KEY")
 GROQ_MODEL: str = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
-ALLOWED_ORIGINS: list[str] = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+# Comma-separated; strip whitespace so "a.com, b.com" works as well as "a.com,b.com"
+ALLOWED_ORIGINS: list[str] = [
+    origin.strip()
+    for origin in os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+    if origin.strip()
+]
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 DEFAULT_DB_PATH = str(REPO_ROOT / "data" / "names.db")

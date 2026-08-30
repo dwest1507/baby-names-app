@@ -2,17 +2,15 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-from slowapi.util import get_remote_address
 
 from .config import ALLOWED_ORIGINS
+from .limiter import limiter
 from .routes.chat import router as chat_router
 from .routes.health import router as health_router
 from .routes.names import router as names_router
-
-limiter = Limiter(key_func=get_remote_address)
 
 app = FastAPI(title="Baby Names Explorer API")
 

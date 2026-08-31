@@ -1,4 +1,5 @@
-.PHONY: help install dev dev-frontend dev-backend sample-db build-db precompute-forecasts test lint \
+.PHONY: help install dev dev-frontend dev-backend sample-db build-db precompute-forecasts \
+	verify-db publish-db test lint \
 	format clean stop \
 	frontend-quality frontend-test frontend-build backend-lint backend-test frontend-deps \
 	security-audit lighthouse ci-cd
@@ -11,6 +12,10 @@ help:
 	@echo "  make dev-backend             - Run backend only (FastAPI on :8000)"
 	@echo "  make build-db                - Build the deployable database (observed rows only, indexed)"
 	@echo "  make precompute-forecasts    - Precompute forecasts into the built database (slow on the real db)"
+	@echo "  make verify-db [DB=path]     - Verify a built database artifact is complete before deploying"
+	@echo "                                 (defaults to data/names.built.db)"
+	@echo "  make publish-db REPO=org/ds  - Publish data/names.built.db to a Hugging Face dataset repo"
+	@echo "                                 (requires HF_TOKEN; see backend/scripts/publish_db.py)"
 	@echo "  make sample-db               - Build a small sample database for development"
 	@echo "  make test                    - Run frontend and backend tests"
 	@echo "  make lint                    - Run frontend and backend linters"
@@ -70,6 +75,13 @@ precompute-forecasts:
 	@echo "for every eligible name; on the real database this is expected to take a long time)..."
 	cd backend && uv run python scripts/precompute_forecasts.py
 	@echo "Forecasts stored in the forecasts table of data/names.built.db."
+
+verify-db:
+	cd backend && uv run python scripts/verify_db.py $(DB)
+
+publish-db:
+	@echo "Publishing data/names.built.db to the Hugging Face dataset repo (requires HF_TOKEN)..."
+	cd backend && uv run python scripts/publish_db.py $(REPO)
 
 sample-db:
 	@echo "Building sample database at backend/data/sample_names.db ..."

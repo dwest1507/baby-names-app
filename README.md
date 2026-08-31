@@ -20,7 +20,7 @@ intervals, and an AI chatbot that answers questions about the data in natural la
 # Install all dependencies
 make install
 
-# Build a small sample database (the real one is 1.1 GB, see below)
+# Build a small sample database (the real one is a published build artifact, see below)
 make sample-db
 
 # Run frontend + backend together
@@ -54,9 +54,10 @@ baby-names-app/
 │   │   ├── database.py     names.db resolution (local path or Hugging Face download)
 │   │   ├── routes/         /api/health, /api/meta, /api/top-names, /api/names, /api/chat
 │   │   └── services/       Queries, ARIMA forecasting, Groq SQL chatbot
-│   ├── scripts/            Sample database generator
+│   ├── scripts/            DB build/publish/verify scripts, sample database generator
+│   ├── Dockerfile          Bakes the database in at build time (see below)
 │   └── tests/              Pytest suite (runs against a generated fixture DB)
-├── data/names.db           Full dataset (Git LFS, ~1.1 GB)
+├── data/                   Build artifacts only (gitignored — see "The Database")
 ├── data_pipeline.ipynb     Data download/processing + ML training notebook
 ├── model_exploration.ipynb Model experimentation notebook
 └── Makefile                Dev automation commands
@@ -112,9 +113,15 @@ The app queries a single `names` table:
 | `popularity_percent` | Share of births for that sex/year (fraction)        |
 | `popularity_rank`    | Rank within the sex/year (1 = most popular)         |
 
-`data/names.db` is tracked with Git LFS and is ~1.1 GB, so a plain checkout contains only a
-pointer file. The backend detects this at startup and reports it via `/api/health`. Supply a
-usable database one of three ways (env vars or `backend/.env`):
+The database is not stored in the repository — it's a **published build artifact**: pruned to
+observed rows only, indexed, carrying precomputed forecasts (`names` and `forecasts` tables),
+built with `make build-db` + `make precompute-forecasts`, verified with `make verify-db`, and
+published to a public Hugging Face dataset with `make publish-db` (see
+`docs/adr/0006-database-as-published-build-artifact.md`). The backend resolves a usable copy in
+this order: a local file at `NAMES_DB_PATH`, or — if unset — a download from `NAMES_DB_REPO`. It
+distinguishes a missing file, an unresolved Git LFS pointer (left over from before this database
+moved to Hugging Face), and a non-database file, and reports whichever it finds via
+`/api/health`. Configure it with (env vars or `backend/.env`):
 
 | Setting              | Purpose                                                      | Default         |
 | -------------------- | ------------------------------------------------------------ | --------------- |
@@ -122,15 +129,15 @@ usable database one of three ways (env vars or `backend/.env`):
 | `NAMES_DB_REPO`      | Hugging Face repo to download from when no local copy exists | unset           |
 | `NAMES_DB_FILE`      | Filename to fetch from that repo                             | `names.db`      |
 | `NAMES_DB_REPO_TYPE` | `dataset` or `model`                                         | `dataset`       |
-| `HF_TOKEN`           | Token for a private Hugging Face repo                        | unset           |
+| `HF_TOKEN`           | Token for a private Hugging Face repo (the published dataset is public and needs none) | unset |
 | `GROQ_API_KEY`       | Required for the AI chatbot                                  | unset           |
 | `GROQ_MODEL`         | Groq model for the chatbot                                   | `openai/gpt-oss-120b` |
 | `ALLOWED_ORIGINS`    | CORS origins for the backend (defence in depth, not the guard) | `http://localhost:3000` |
 | `BACKEND_SHARED_SECRET` | Required on every backend endpoint except `/api/health`; set to the same value on the frontend | unset |
 | `APP_ENV`            | `production` makes a missing shared secret fail closed        | `development`   |
 
-For local development without the full dataset, `make sample-db` generates a small database
-with a handful of names and plausible multi-decade trends.
+For local development, `make sample-db` generates a small database with a handful of names and
+plausible multi-decade trends — the full dataset has never been required for `make dev`.
 
 ## Data Pipeline & ML Notebooks
 
@@ -147,9 +154,12 @@ Install their dependencies with `pip install -r requirements.txt` (the web app i
 ## Deployment
 
 - **Frontend** — any Next.js host (e.g. Vercel). Set `NAMES_API_URL` to the backend's URL.
-- **Backend** — any Python host (e.g. Railway). Set `ALLOWED_ORIGINS` to the frontend origin
-  and either mount a real `names.db` or set `NAMES_DB_REPO` so it downloads at startup.
-  Note the full database is ~1.1 GB; hosts with small disks may need a slimmed rebuild.
+- **Backend** — `backend/Dockerfile` downloads the published database from Hugging Face at
+  *build* time (via `NAMES_DB_REPO`/`HF_TOKEN` build args) and bakes it into the image at a
+  fixed `NAMES_DB_PATH`, so the running container never calls a third party — no build arg or
+  token exists in the runtime image, and a cache miss on the request path is structurally
+  impossible. Binds `$PORT`. See `docs/adr/0006-database-as-published-build-artifact.md` for the
+  reasoning and `make verify-db` to check an artifact before deploying it.
 
 ## Data Source
 

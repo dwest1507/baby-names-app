@@ -23,7 +23,13 @@ NAMES_DB_PATH: str = os.environ.get("NAMES_DB_PATH", DEFAULT_DB_PATH)
 NAMES_DB_REPO: str | None = os.environ.get("NAMES_DB_REPO")
 NAMES_DB_FILE: str = os.environ.get("NAMES_DB_FILE", "names.db")
 NAMES_DB_REPO_TYPE: str = os.environ.get("NAMES_DB_REPO_TYPE", "dataset")
-HF_TOKEN: str | None = os.environ.get("HF_TOKEN")
+# `or None` matters here, not just style: an empty string is still passed to
+# huggingface_hub as `token=""`, which sends `Authorization: Bearer ` (empty)
+# and fails with `httpx.LocalProtocolError: Illegal header value b'Bearer '`
+# rather than the anonymous, unauthenticated request a public dataset needs.
+# Caught building backend/Dockerfile with no HF_TOKEN build arg set — the
+# exact "public dataset, no token required" path this project depends on.
+HF_TOKEN: str | None = os.environ.get("HF_TOKEN") or None
 
 # Presented by the frontend proxy on every backend call except the health probe.
 # Unset means no secret is required, which keeps a fresh local checkout usable;

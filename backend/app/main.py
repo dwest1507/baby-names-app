@@ -13,6 +13,11 @@ from .routes.chat import router as chat_router
 from .routes.health import router as health_router
 from .routes.names import router as names_router
 from .security import secret_is_valid
+from .sentry import init_sentry
+
+# A no-op without SENTRY_DSN configured (local dev, CI). Called before the app
+# is constructed so a startup-time exception is reportable too, once deployed.
+init_sentry()
 
 app = FastAPI(title="Baby Names Explorer API")
 

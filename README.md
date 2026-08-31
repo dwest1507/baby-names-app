@@ -135,6 +135,7 @@ moved to Hugging Face), and a non-database file, and reports whichever it finds 
 | `ALLOWED_ORIGINS`    | CORS origins for the backend (defence in depth, not the guard) | `http://localhost:3000` |
 | `BACKEND_SHARED_SECRET` | Required on every backend endpoint except `/api/health`; set to the same value on the frontend | unset |
 | `APP_ENV`            | `production` makes a missing shared secret fail closed        | `development`   |
+| `SENTRY_DSN`         | Reports backend exceptions to Sentry; unset (local dev, CI) is a complete no-op | unset |
 
 For local development, `make sample-db` generates a small database with a handful of names and
 plausible multi-decade trends — the full dataset has never been required for `make dev`.
@@ -153,13 +154,13 @@ Install their dependencies with `pip install -r requirements.txt` (the web app i
 
 ## Deployment
 
-- **Frontend** — any Next.js host (e.g. Vercel). Set `NAMES_API_URL` to the backend's URL.
-- **Backend** — `backend/Dockerfile` downloads the published database from Hugging Face at
-  *build* time (via `NAMES_DB_REPO`/`HF_TOKEN` build args) and bakes it into the image at a
-  fixed `NAMES_DB_PATH`, so the running container never calls a third party — no build arg or
-  token exists in the runtime image, and a cache miss on the request path is structurally
-  impossible. Binds `$PORT`. See `docs/adr/0006-database-as-published-build-artifact.md` for the
-  reasoning and `make verify-db` to check an artifact before deploying it.
+The frontend deploys to Vercel and the backend to Railway (as a Docker image), both via the
+platforms' own git integrations from `main`. See **[docs/deployment.md](docs/deployment.md)** for
+the full picture — first-time setup in dependency order, platform config files
+(`frontend/vercel.json`, `backend/railway.json`), known traps, failure-symptom tables, rollback,
+and the environment variable reference — and **[docs/ci-cd.md](docs/ci-cd.md)** for the exact
+branch-protection check names. `scripts/deploy-wizard.sh` walks the manual dashboard steps
+interactively and verifies a deployment from outside without writing to either platform.
 
 ## Data Source
 

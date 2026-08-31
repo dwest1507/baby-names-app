@@ -37,6 +37,12 @@ HF_TOKEN: str | None = os.environ.get("HF_TOKEN") or None
 # the health probe (see docs/adr/0002-shared-secret-gateway.md).
 BACKEND_SHARED_SECRET: str | None = os.environ.get("BACKEND_SHARED_SECRET") or None
 
+# Optional. Unset locally and in CI (the default), so neither ever reports to
+# Sentry and neither consumes the free tier's event budget. Set on Railway once
+# a Sentry project exists; see app/sentry.py, which no-ops entirely when this
+# is unset.
+SENTRY_DSN: str | None = os.environ.get("SENTRY_DSN") or None
+
 # "Am I deployed?" — set APP_ENV=production explicitly, but also infer it from
 # the variables Railway injects into every container it runs, so that a
 # deployment cannot end up unguarded because one variable was forgotten.

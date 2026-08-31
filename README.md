@@ -125,7 +125,9 @@ usable database one of three ways (env vars or `backend/.env`):
 | `HF_TOKEN`           | Token for a private Hugging Face repo                        | unset           |
 | `GROQ_API_KEY`       | Required for the AI chatbot                                  | unset           |
 | `GROQ_MODEL`         | Groq model for the chatbot                                   | `openai/gpt-oss-120b` |
-| `ALLOWED_ORIGINS`    | CORS origins for the backend                                 | `http://localhost:3000` |
+| `ALLOWED_ORIGINS`    | CORS origins for the backend (defence in depth, not the guard) | `http://localhost:3000` |
+| `BACKEND_SHARED_SECRET` | Required on every backend endpoint except `/api/health`; set to the same value on the frontend | unset |
+| `APP_ENV`            | `production` makes a missing shared secret fail closed        | `development`   |
 
 For local development without the full dataset, `make sample-db` generates a small database
 with a handful of names and plausible multi-decade trends.

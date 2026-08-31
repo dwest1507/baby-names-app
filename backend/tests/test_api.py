@@ -1,8 +1,46 @@
+import re
+
+import pytest
+from conftest import SHARED_SECRET
 from fastapi.testclient import TestClient
 
 from app.main import app
 
-client = TestClient(app)
+# The frontend proxy is the only caller; it always attaches the shared secret.
+client = TestClient(app, headers={"X-Backend-Secret": SHARED_SECRET})
+# Anything else on the public internet looks like this.
+anonymous = TestClient(app)
+
+
+def test_endpoint_rejects_a_request_without_the_shared_secret():
+    response = anonymous.get("/api/meta")
+    assert response.status_code == 401
+
+
+def _api_routes() -> list[tuple[str, str]]:
+    """Every route the app serves, read from the app rather than hand-listed, so
+    that a route added later is covered without editing this test."""
+    routes = []
+    for path, operations in app.openapi()["paths"].items():
+        for method in operations:
+            routes.append((method.upper(), re.sub(r"{[^}]+}", "emma", path)))
+    return sorted(routes)
+
+
+@pytest.mark.parametrize(("method", "path"), _api_routes())
+def test_every_endpoint_but_health_rejects_a_request_without_the_secret(method, path):
+    response = anonymous.request(method, path, params={"sex": "F"}, json={"message": "hi"})
+    if path == "/api/health":
+        assert response.status_code == 200
+    else:
+        assert response.status_code == 401
+
+
+def test_health_answers_without_the_shared_secret():
+    # The deployment platform probes this endpoint and cannot present a secret.
+    response = anonymous.get("/api/health")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
 
 
 def test_health():
@@ -113,3 +151,128 @@ def test_forecast_for_a_name_in_current_use_covers_the_next_five_years():
     assert [point["year"] for point in body["forecast"]] == list(
         range(newest_year + 1, newest_year + 6)
     )
+
+
+# One chat turn spends two provider calls, so the chat tier is much tighter than
+# the general one; see app/limiter.py for the arithmetic.
+CHAT_BURST = 5
+
+
+def _no_provider_calls(monkeypatch):
+    """Chat returns 503 without a key, so these tests never reach Groq."""
+    from app import config
+
+    monkeypatch.setattr(config, "GROQ_API_KEY", None)
+
+
+def test_chat_is_limited_more_tightly_than_the_rest_of_the_api(monkeypatch):
+    _no_provider_calls(monkeypatch)
+    visitor = {"X-Forwarded-For": "203.0.113.10"}
+
+    chat = [
+        client.post("/api/chat", json={"message": "hi"}, headers=visitor).status_code
+        for _ in range(CHAT_BURST + 1)
+    ]
+    assert chat[-1] == 429
+    assert 429 not in chat[:-1]
+
+    # The same number of ordinary requests is nowhere near the general ceiling.
+    other = [client.get("/api/meta", headers=visitor).status_code for _ in range(CHAT_BURST + 1)]
+    assert 429 not in other
+
+
+def test_two_visitors_at_different_addresses_get_independent_buckets(monkeypatch):
+    _no_provider_calls(monkeypatch)
+    one = {"X-Forwarded-For": "203.0.113.10"}
+    another = {"X-Forwarded-For": "198.51.100.7"}
+
+    for _ in range(CHAT_BURST):
+        client.post("/api/chat", json={"message": "hi"}, headers=one)
+    assert client.post("/api/chat", json={"message": "hi"}, headers=one).status_code == 429
+
+    # A different visitor arriving through the same proxy is unaffected.
+    assert client.post("/api/chat", json={"message": "hi"}, headers=another).status_code == 503
+
+
+# The general ceiling: 60 requests a minute per visitor, across all endpoints.
+GENERAL_BURST = 60
+
+
+def test_a_general_ceiling_applies_per_visitor_across_the_whole_api():
+    visitor = {"X-Forwarded-For": "203.0.113.20"}
+    # Spend the allowance over a mix of endpoints: the ceiling is one bucket for
+    # the whole API, not a fresh allowance for each route.
+    spent = []
+    for i in range(GENERAL_BURST):
+        if i % 2:
+            spent.append(client.get("/api/meta", headers=visitor).status_code)
+        else:
+            spent.append(
+                client.get(
+                    "/api/top-names", params={"sex": "F", "year": 2015}, headers=visitor
+                ).status_code
+            )
+    assert 429 not in spent
+
+    assert client.get("/api/meta", headers=visitor).status_code == 429
+    assert client.get("/api/names/emma", params={"sex": "F"}, headers=visitor).status_code == 429
+
+    # A visitor at another address still has their own full allowance.
+    assert client.get("/api/meta", headers={"X-Forwarded-For": "198.51.100.8"}).status_code == 200
+
+
+def test_the_backend_refuses_to_serve_in_production_with_no_secret_configured(monkeypatch):
+    from app import config
+
+    monkeypatch.setattr(config, "BACKEND_SHARED_SECRET", None)
+    monkeypatch.setattr(config, "IS_PRODUCTION", True)
+    # A deployment that lost its secret must fail closed rather than serve the
+    # public internet without a guard.
+    assert anonymous.get("/api/meta").status_code == 401
+    assert client.get("/api/meta").status_code == 401
+    assert anonymous.get("/api/health").status_code == 200
+
+
+def test_local_development_without_a_secret_stays_usable(monkeypatch):
+    from app import config
+
+    # A fresh checkout has no secret configured and `make dev` must still work.
+    monkeypatch.setattr(config, "BACKEND_SHARED_SECRET", None)
+    monkeypatch.setattr(config, "IS_PRODUCTION", False)
+    assert anonymous.get("/api/meta").status_code == 200
+
+
+def test_an_unauthenticated_request_never_spends_a_visitors_allowance(monkeypatch):
+    _no_provider_calls(monkeypatch)
+    spoofed = {"X-Forwarded-For": "203.0.113.50"}
+
+    for _ in range(GENERAL_BURST + CHAT_BURST):
+        assert (
+            anonymous.post("/api/chat", json={"message": "hi"}, headers=spoofed).status_code == 401
+        )
+
+    # The secret is checked before the forwarded address is believed, so an
+    # outsider cannot lock a visitor out by claiming to be them.
+    assert client.post("/api/chat", json={"message": "hi"}, headers=spoofed).status_code == 503
+
+
+def test_a_request_with_no_forwarded_address_is_bucketed_by_its_peer_address(monkeypatch):
+    _no_provider_calls(monkeypatch)
+
+    for _ in range(CHAT_BURST):
+        client.post("/api/chat", json={"message": "hi"})
+    assert client.post("/api/chat", json={"message": "hi"}).status_code == 429
+
+    # That bucket belongs to the caller itself, not to any forwarded visitor.
+    assert (
+        client.post(
+            "/api/chat", json={"message": "hi"}, headers={"X-Forwarded-For": "203.0.113.30"}
+        ).status_code
+        == 503
+    )
+
+
+def test_the_health_probe_is_never_rate_limited():
+    probe = {"X-Forwarded-For": "203.0.113.40"}
+    for _ in range(GENERAL_BURST + 5):
+        assert anonymous.get("/api/health", headers=probe).status_code == 200

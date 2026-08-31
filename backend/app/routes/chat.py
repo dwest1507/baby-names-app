@@ -7,7 +7,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from .. import database
-from ..limiter import limiter
+from ..limiter import CHAT_LIMIT, limiter
 from ..services import chatbot
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ def _answer(body: ChatRequest) -> ChatResponse:
 
 
 @router.post("/chat")
-@limiter.limit("30/minute")
+@limiter.limit(CHAT_LIMIT)
 async def chat(request: Request, body: ChatRequest) -> ChatResponse:
     available, problem = database.database_status()
     if not available:

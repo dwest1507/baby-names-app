@@ -24,3 +24,18 @@ NAMES_DB_REPO: str | None = os.environ.get("NAMES_DB_REPO")
 NAMES_DB_FILE: str = os.environ.get("NAMES_DB_FILE", "names.db")
 NAMES_DB_REPO_TYPE: str = os.environ.get("NAMES_DB_REPO_TYPE", "dataset")
 HF_TOKEN: str | None = os.environ.get("HF_TOKEN")
+
+# Presented by the frontend proxy on every backend call except the health probe.
+# Unset means no secret is required, which keeps a fresh local checkout usable;
+# a deployment with no secret fails closed instead, refusing every request but
+# the health probe (see docs/adr/0002-shared-secret-gateway.md).
+BACKEND_SHARED_SECRET: str | None = os.environ.get("BACKEND_SHARED_SECRET") or None
+
+# "Am I deployed?" — set APP_ENV=production explicitly, but also infer it from
+# the variables Railway injects into every container it runs, so that a
+# deployment cannot end up unguarded because one variable was forgotten.
+APP_ENV: str = os.environ.get("APP_ENV", "development")
+IS_PRODUCTION: bool = APP_ENV == "production" or any(
+    os.environ.get(marker)
+    for marker in ("RAILWAY_ENVIRONMENT", "RAILWAY_ENVIRONMENT_NAME", "RAILWAY_SERVICE_ID")
+)

@@ -1,4 +1,4 @@
-.PHONY: help install dev dev-frontend dev-backend sample-db test lint format clean stop \
+.PHONY: help install dev dev-frontend dev-backend sample-db build-db test lint format clean stop \
 	frontend-quality frontend-test frontend-build backend-lint backend-test frontend-deps \
 	security-audit lighthouse ci-cd
 
@@ -8,6 +8,7 @@ help:
 	@echo "  make dev                     - Run both frontend and backend locally"
 	@echo "  make dev-frontend            - Run frontend only (Next.js on :3000)"
 	@echo "  make dev-backend             - Run backend only (FastAPI on :8000)"
+	@echo "  make build-db                - Build the deployable database (observed rows only, indexed)"
 	@echo "  make sample-db               - Build a small sample database for development"
 	@echo "  make test                    - Run frontend and backend tests"
 	@echo "  make lint                    - Run frontend and backend linters"
@@ -56,6 +57,11 @@ dev-backend:
 dev: frontend-deps
 	@echo "Starting full stack... (Press Ctrl+C to stop)"
 	@$(MAKE) -j2 dev-frontend dev-backend
+
+build-db:
+	@echo "Building the deployable database from data/names.db ..."
+	cd backend && uv run python scripts/build_db.py
+	@echo "Built data/names.built.db — observed rows only, indexed."
 
 sample-db:
 	@echo "Building sample database at backend/data/sample_names.db ..."

@@ -1,17 +1,12 @@
 """Parameterized queries against the names table.
 
-The table is padded: the pipeline cross-joins every name/sex pair with every
-year and zero-fills the gaps, so most of its rows are fabricated rather than
-observed. Every query here filters to observed rows so the rest of the app
-never sees the padding. A surviving row has a count of at least five — the
-source suppresses anything smaller — so a missing row means "fewer than five,
-or none", never "zero".
+The table holds observed rows only: a row exists for a name/sex/year only if a
+count was actually recorded against it. Because the source suppresses counts
+below five, a missing row means "fewer than five, or none" — never "zero". See
+docs/adr/0003-observed-rows-only.md.
 """
 
 from .. import database
-
-# A row is an observation only if a count was actually recorded against it.
-OBSERVED = "total_count > 0"
 
 
 def get_year_range() -> dict:
@@ -29,10 +24,10 @@ def get_top_names(sex: str, year: int, limit: int) -> list[dict]:
     conn = database.connect()
     try:
         rows = conn.execute(
-            f"""
+            """
             SELECT name, sex, year, total_count, popularity_percent, popularity_rank
             FROM names
-            WHERE sex = ? AND year = ? AND {OBSERVED}
+            WHERE sex = ? AND year = ?
             ORDER BY total_count DESC
             LIMIT ?
             """,
@@ -44,13 +39,19 @@ def get_top_names(sex: str, year: int, limit: int) -> list[dict]:
 
 
 def get_name_history(name: str, sex: str) -> list[dict]:
+    """A name's recorded years, oldest first.
+
+    The `LOWER(name)` predicate must be written exactly as `db_schema` indexes
+    it, or the planner cannot match the expression index and falls back to
+    scanning one sex's several million rows.
+    """
     conn = database.connect()
     try:
         rows = conn.execute(
-            f"""
+            """
             SELECT name, sex, year, total_count, popularity_percent, popularity_rank
             FROM names
-            WHERE LOWER(name) = LOWER(?) AND sex = ? AND {OBSERVED}
+            WHERE LOWER(name) = LOWER(?) AND sex = ?
             ORDER BY year
             """,
             (name, sex),
@@ -61,14 +62,14 @@ def get_name_history(name: str, sex: str) -> list[dict]:
 
 
 def get_latest_data_year() -> int | None:
-    """The newest year with a recorded count, read from the data itself.
+    """The newest year present in the data, read from the data itself.
 
     Forecast eligibility is defined against this rather than a hardcoded year,
     so next year's data refresh needs no code change.
     """
     conn = database.connect()
     try:
-        row = conn.execute(f"SELECT MAX(year) AS newest FROM names WHERE {OBSERVED}").fetchone()
+        row = conn.execute("SELECT MAX(year) AS newest FROM names").fetchone()
         return row["newest"]
     finally:
         conn.close()

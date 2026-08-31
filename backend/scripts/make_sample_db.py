@@ -4,12 +4,11 @@ The real database is ~1.1 GB and tracked with Git LFS. This script builds a
 tiny stand-in with a handful of names and plausible multi-decade trends so the
 API and frontend can be developed without the full dataset.
 
-The sample mirrors the shape of the real database, including its defects: the
-real pipeline cross-joins every name/sex pair with every year and zero-fills
-the gaps, so a name that was never recorded in a year still has a row with
-`total_count = 0`. Those rows are fabricated, not observations, and the query
-layer filters them out. The sample carries them so that filtering is actually
-exercised by the tests.
+The sample mirrors the shape of the built database: observed rows only, and
+the same indexes. A name/sex/year whose share falls below the suppression
+threshold simply has no row, exactly as the source data has none for a
+combination with fewer than five recorded births. The index DDL is shared with
+`build_db.py` (`app.db_schema`) so the two artifacts cannot drift apart.
 
 Usage: uv run python scripts/make_sample_db.py [output_path]
 """
@@ -19,10 +18,14 @@ import sqlite3
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from app import db_schema  # noqa: E402
+
 YEARS = range(1960, 2025)
 
 # Below this share of births the source suppresses the count for privacy, so
-# the real data has no row: the pipeline pads it with a fabricated zero.
+# the real data has no row at all for that name/sex/year.
 SUPPRESSION_THRESHOLD = 1e-5
 
 # (name, sex, peak_year, peak_percent, spread)
@@ -49,18 +52,7 @@ def build(path: str) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.execute("DROP TABLE IF EXISTS names")
-    conn.execute(
-        """
-        CREATE TABLE names (
-            name TEXT,
-            sex TEXT,
-            total_count INTEGER,
-            year INTEGER,
-            popularity_percent REAL,
-            popularity_rank INTEGER
-        )
-        """
-    )
+    conn.execute(db_schema.CREATE_TABLE)
 
     rows = []
     for year in YEARS:
@@ -69,8 +61,8 @@ def build(path: str) -> None:
         for name, sex, peak, peak_pct, spread in PROFILES:
             pct = peak_pct * math.exp(-(((year - peak) / spread) ** 2))
             if pct < SUPPRESSION_THRESHOLD:
-                # Fabricated padding row, exactly as the real pipeline emits it.
-                pct = 0.0
+                # Suppressed at the source: no row exists for this combination.
+                continue
             year_rows[sex].append((name, sex, int(pct * births), year, pct))
         for entries in year_rows.values():
             entries.sort(key=lambda r: (-r[2], r[0]))
@@ -78,8 +70,7 @@ def build(path: str) -> None:
                 rows.append((name, s, count, y, pct, rank))
 
     conn.executemany("INSERT INTO names VALUES (?, ?, ?, ?, ?, ?)", rows)
-    conn.execute("CREATE INDEX idx_names_name_sex ON names (name, sex)")
-    conn.execute("CREATE INDEX idx_names_sex_year ON names (sex, year)")
+    db_schema.create_indexes(conn)
     conn.commit()
     conn.close()
     print(f"Wrote {len(rows)} rows to {path}")

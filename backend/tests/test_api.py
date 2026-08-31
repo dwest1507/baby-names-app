@@ -65,3 +65,51 @@ def test_chat_unavailable_without_key(monkeypatch):
     monkeypatch.setattr(config, "GROQ_API_KEY", None)
     response = client.post("/api/chat", json={"message": "How many names?"})
     assert response.status_code == 503
+
+
+def test_name_history_omits_years_with_no_recorded_births():
+    # Debra falls out of use partway through the sample data; the fabricated
+    # zero rows that pad it to the final year must not appear as history.
+    newest_year = client.get("/api/meta").json()["max_year"]
+    response = client.get("/api/names/debra", params={"sex": "F"})
+    assert response.status_code == 200
+    history = response.json()["history"]
+    assert history
+    assert all(row["total_count"] > 0 for row in history)
+    assert history[-1]["year"] < newest_year
+
+
+def test_forecast_omitted_for_a_name_no_longer_in_use():
+    # Debra has ample history but was not recorded in the newest year, so it is
+    # not in current use and must not be forecast.
+    response = client.get("/api/names/debra/forecast", params={"sex": "F"})
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["history"]) >= 10
+    assert body["forecast"] == []
+
+
+def test_forecast_omitted_for_a_name_with_too_little_history():
+    # Mateo is a recent arrival: recorded in the newest year, but with fewer
+    # than MIN_HISTORY_YEARS observed years to fit on.
+    response = client.get("/api/names/mateo/forecast", params={"sex": "M"})
+    assert response.status_code == 200
+    body = response.json()
+    assert 0 < len(body["history"]) < 10
+    assert body["forecast"] == []
+
+
+def test_forecast_never_covers_a_year_that_has_already_occurred():
+    newest_year = client.get("/api/meta").json()["max_year"]
+    for name, sex in (("emma", "F"), ("debra", "F"), ("mateo", "M")):
+        body = client.get(f"/api/names/{name}/forecast", params={"sex": sex}).json()
+        assert all(point["year"] > newest_year for point in body["forecast"])
+
+
+def test_forecast_for_a_name_in_current_use_covers_the_next_five_years():
+    newest_year = client.get("/api/meta").json()["max_year"]
+    body = client.get("/api/names/emma/forecast", params={"sex": "F"}).json()
+    assert len(body["history"]) >= 10
+    assert [point["year"] for point in body["forecast"]] == list(
+        range(newest_year + 1, newest_year + 6)
+    )

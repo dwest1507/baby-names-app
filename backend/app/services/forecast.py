@@ -216,6 +216,12 @@ def forecast_name(name: str, sex: str) -> dict | None:
         "model": None,
     }
 
+    # Only names in current use are forecast: the last observation must be the
+    # newest year present in the data. This also guarantees no forecast can
+    # land on a year that has already occurred.
+    if years[-1] != queries.get_latest_data_year():
+        return payload
+
     if len(values) < MIN_HISTORY_YEARS:
         return payload
 

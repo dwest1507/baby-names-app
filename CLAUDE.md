@@ -66,3 +66,21 @@ Browser → Next.js (:3000) → /api/[...path]/route.ts (proxy) → FastAPI (:80
 Backend env vars (see root README for the full table): `NAMES_DB_PATH`, `NAMES_DB_REPO`,
 `NAMES_DB_FILE`, `NAMES_DB_REPO_TYPE`, `HF_TOKEN`, `GROQ_API_KEY`, `GROQ_MODEL`,
 `ALLOWED_ORIGINS`. Frontend: `NAMES_API_URL` (proxy target).
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues in `dwest1507/baby-names-app`, managed via the `gh` CLI.
+External pull requests are not a triage surface. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles use their default label strings (`needs-triage`,
+`needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` plus `docs/adr/` at the repo root (neither exists yet;
+they're created lazily). See `docs/agents/domain.md`.

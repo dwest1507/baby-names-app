@@ -58,6 +58,7 @@ def build(source: str, output: str) -> dict:
         conn.execute("DETACH DATABASE src")
 
         db_schema.create_indexes(conn)
+        conn.execute(db_schema.CREATE_FORECASTS_TABLE)
         conn.execute("ANALYZE")
         conn.commit()
         (kept,) = conn.execute("SELECT COUNT(*) FROM names").fetchone()

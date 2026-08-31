@@ -153,6 +153,25 @@ def test_forecast_for_a_name_in_current_use_covers_the_next_five_years():
     )
 
 
+def test_forecast_endpoint_fits_no_model_at_request_time(monkeypatch):
+    # Forecasts are precomputed by scripts/precompute_forecasts.py and stored;
+    # the endpoint is a lookup. If it fit a model live, this would raise and
+    # the request would 500 instead of returning a populated forecast.
+    from app.services import forecast
+
+    def _must_not_be_called(*args, **kwargs):
+        raise AssertionError("ARIMA fitting must not run on the request path")
+
+    monkeypatch.setattr(forecast, "_fit_best_model", _must_not_be_called)
+    monkeypatch.setattr(forecast, "fit_forecast", _must_not_be_called)
+
+    response = client.get("/api/names/emma/forecast", params={"sex": "F"})
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["forecast"]) == 5
+    assert body["model"] is not None
+
+
 # One chat turn spends two provider calls, so the chat tier is much tighter than
 # the general one; see app/limiter.py for the arithmetic.
 CHAT_BURST = 5

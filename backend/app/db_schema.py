@@ -38,3 +38,19 @@ INDEXES = (
 def create_indexes(conn) -> None:
     for statement in INDEXES:
         conn.execute(statement)
+
+
+# Precomputed forecasts, keyed on the lowercased name and sex — the same key
+# the history lookup normalizes to. `payload` is the JSON-encoded forecast
+# blob (forecast points, model diagnostics, validation) with the history
+# series stripped out: history is composed at request time from `names`
+# instead, so this table never re-adds the size pruning just removed. See
+# docs/adr/0004-forecasts-as-a-build-artifact.md.
+CREATE_FORECASTS_TABLE = """
+CREATE TABLE IF NOT EXISTS forecasts (
+    name TEXT NOT NULL,
+    sex TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    PRIMARY KEY (name, sex)
+)
+"""

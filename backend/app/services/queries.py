@@ -6,6 +6,8 @@ below five, a missing row means "fewer than five, or none" — never "zero". See
 docs/adr/0003-observed-rows-only.md.
 """
 
+import json
+
 from .. import database
 
 
@@ -71,5 +73,24 @@ def get_latest_data_year() -> int | None:
     try:
         row = conn.execute("SELECT MAX(year) AS newest FROM names").fetchone()
         return row["newest"]
+    finally:
+        conn.close()
+
+
+def get_forecast(name: str, sex: str) -> dict | None:
+    """The precomputed forecast blob for a name/sex, or None if there isn't one.
+
+    A missing row means either the name was ineligible when the batch last
+    ran (see docs/adr/0001-forecast-only-names-in-current-use.md), or it has
+    no rows in `names` at all. `forecasts.name` is stored lowercased, matching
+    how the batch (`scripts/precompute_forecasts.py`) keys it.
+    """
+    conn = database.connect()
+    try:
+        row = conn.execute(
+            "SELECT payload FROM forecasts WHERE name = LOWER(?) AND sex = ?",
+            (name, sex),
+        ).fetchone()
+        return json.loads(row["payload"]) if row else None
     finally:
         conn.close()

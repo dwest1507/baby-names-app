@@ -1,4 +1,5 @@
-.PHONY: help install dev dev-frontend dev-backend sample-db build-db test lint format clean stop \
+.PHONY: help install dev dev-frontend dev-backend sample-db build-db precompute-forecasts test lint \
+	format clean stop \
 	frontend-quality frontend-test frontend-build backend-lint backend-test frontend-deps \
 	security-audit lighthouse ci-cd
 
@@ -9,6 +10,7 @@ help:
 	@echo "  make dev-frontend            - Run frontend only (Next.js on :3000)"
 	@echo "  make dev-backend             - Run backend only (FastAPI on :8000)"
 	@echo "  make build-db                - Build the deployable database (observed rows only, indexed)"
+	@echo "  make precompute-forecasts    - Precompute forecasts into the built database (slow on the real db)"
 	@echo "  make sample-db               - Build a small sample database for development"
 	@echo "  make test                    - Run frontend and backend tests"
 	@echo "  make lint                    - Run frontend and backend linters"
@@ -62,6 +64,12 @@ build-db:
 	@echo "Building the deployable database from data/names.db ..."
 	cd backend && uv run python scripts/build_db.py
 	@echo "Built data/names.built.db — observed rows only, indexed."
+
+precompute-forecasts:
+	@echo "Precomputing forecasts into data/names.built.db (this greedily grid-searches ARIMA"
+	@echo "for every eligible name; on the real database this is expected to take a long time)..."
+	cd backend && uv run python scripts/precompute_forecasts.py
+	@echo "Forecasts stored in the forecasts table of data/names.built.db."
 
 sample-db:
 	@echo "Building sample database at backend/data/sample_names.db ..."

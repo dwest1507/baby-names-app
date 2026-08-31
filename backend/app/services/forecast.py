@@ -1,13 +1,17 @@
 """ARIMA popularity forecasting, ported from the original Streamlit app.
 
 Fits a small grid of ARIMA models selected by AICc, forecasts 5 years ahead
-with 80%/95% confidence intervals, and validates on a 5-year holdout. Results
-are cached per (name, sex) since fitting is CPU-bound.
+with 80%/95% confidence intervals, and validates on a 5-year holdout.
+
+Fitting (`fit_forecast`) is CPU-bound and runs only from
+`scripts/precompute_forecasts.py`, offline. The request path only calls
+`build_response`, which composes the API response from history read fresh
+plus a stored blob — it fits nothing. See
+docs/adr/0004-forecasts-as-a-build-artifact.md.
 """
 
 import logging
 import warnings
-from functools import lru_cache
 
 import numpy as np
 from scipy import stats
@@ -15,8 +19,6 @@ from statsmodels.stats.diagnostic import acorr_ljungbox, het_arch
 from statsmodels.tools.sm_exceptions import ModelWarning
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.stattools import adfuller, kpss
-
-from . import queries
 
 # Grid-searching ARIMA orders makes statsmodels complain constantly about
 # non-convergence, non-invertible starting parameters and the like; those are
@@ -195,51 +197,48 @@ def _validate(values: np.ndarray, years: list[int]) -> dict | None:
     }
 
 
-@lru_cache(maxsize=256)
-def forecast_name(name: str, sex: str) -> dict | None:
-    """Build the full forecast payload for a name, or None when it has no history."""
-    history = queries.get_name_history(name, sex)
-    if not history:
-        return None
+def is_eligible(years: list[int], latest_year: int | None) -> bool:
+    """Whether a name/sex's observed years qualify it for a forecast.
 
+    A forecast is produced only for a name observed in the newest year present
+    in the data, with at least `MIN_HISTORY_YEARS` observed years. This also
+    guarantees no forecast can land on a year that has already occurred, since
+    every eligible name's last observation is the newest year. See
+    docs/adr/0001-forecast-only-names-in-current-use.md.
+    """
+    return bool(years) and years[-1] == latest_year and len(years) >= MIN_HISTORY_YEARS
+
+
+def fit_forecast(history: list[dict]) -> dict:
+    """Fit an ARIMA model and produce the forecast/validation/model blob.
+
+    This is the CPU-bound half of forecasting — the part that must run only
+    once, offline, from `scripts/precompute_forecasts.py`, rather than on the
+    request path. Callers are responsible for checking `is_eligible` first;
+    this function fits unconditionally on whatever history it is given, and
+    the result is exactly what is stored in the `forecasts` table (history
+    itself excluded — the caller already has it).
+    """
     years = [row["year"] for row in history]
     values = np.array([row["popularity_percent"] for row in history], dtype=float)
 
-    payload: dict = {
-        "name": history[0]["name"],
-        "sex": sex,
-        "history": [
-            {"year": int(y), "value": float(v)} for y, v in zip(years, values, strict=True)
-        ],
-        "forecast": [],
-        "validation": None,
-        "model": None,
-    }
-
-    # Only names in current use are forecast: the last observation must be the
-    # newest year present in the data. This also guarantees no forecast can
-    # land on a year that has already occurred.
-    if years[-1] != queries.get_latest_data_year():
-        return payload
-
-    if len(values) < MIN_HISTORY_YEARS:
-        return payload
+    result: dict = {"forecast": [], "validation": None, "model": None}
 
     processed, log_applied = _preprocess(values)
     model, params = _fit_best_model(processed)
     if model is None:
-        return payload
+        return result
 
     try:
         forecast = _forecast(model, log_applied, FORECAST_YEARS)
     except Exception:
         logger.warning("ARIMA forecasting failed", exc_info=True)
-        return payload
+        return result
 
     last_year = years[-1]
     future_years = range(last_year + 1, last_year + FORECAST_YEARS + 1)
     ci80, ci95 = forecast["intervals"][0.8], forecast["intervals"][0.95]
-    payload["forecast"] = [
+    result["forecast"] = [
         {
             "year": int(year),
             "mean": float(max(forecast["mean"][i], 0.0)),
@@ -252,7 +251,7 @@ def forecast_name(name: str, sex: str) -> dict | None:
     ]
 
     is_stationary, adf_p, kpss_p = _check_stationarity(processed)
-    payload["model"] = {
+    result["model"] = {
         "order": list(params),
         "aic": float(model.aic),
         "bic": float(model.bic),
@@ -264,5 +263,26 @@ def forecast_name(name: str, sex: str) -> dict | None:
             "kpss_pvalue": kpss_p,
         },
     }
-    payload["validation"] = _validate(values, years)
-    return payload
+    result["validation"] = _validate(values, years)
+    return result
+
+
+def build_response(sex: str, history: list[dict], stored: dict | None) -> dict:
+    """Compose the API response from history read fresh plus a stored blob.
+
+    `stored` is the JSON-decoded `forecasts.payload` for this name/sex, or
+    None when there is no row — either because the name was ineligible when
+    the batch ran, or because it has no forecast for any other reason. Either
+    way the response shape matches what the endpoint always returned: an
+    empty forecast list rather than a missing key. No fitting happens here.
+    """
+    return {
+        "name": history[0]["name"],
+        "sex": sex,
+        "history": [
+            {"year": int(row["year"]), "value": float(row["popularity_percent"])} for row in history
+        ],
+        "forecast": stored["forecast"] if stored else [],
+        "validation": stored["validation"] if stored else None,
+        "model": stored["model"] if stored else None,
+    }

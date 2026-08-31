@@ -88,6 +88,19 @@ export default function TrendChart({ payload }: TrendChartProps) {
   const hasForecast = payload.forecast.length > 0
   const hasValidation = (payload.validation?.points.length ?? 0) > 0
 
+  // Bands must be labelled with the coverage they actually achieve — measured
+  // by the precompute batch's holdout backtest across every eligible name —
+  // not the nominal 80%/95% level, which the parent PRD found could overstate
+  // coverage by 24 points. Falls back to the nominal label only if calibration
+  // is missing entirely. See docs/adr/0005-truthful-confidence-intervals.md.
+  const intervalLabel = (nominal: '0.8' | '0.95'): string => {
+    const measured = payload.calibration?.[nominal]?.empirical_coverage
+    if (measured === undefined) return `${Math.round(Number(nominal) * 100)}% interval`
+    return `${Math.round(measured * 100)}% interval`
+  }
+  const label80 = intervalLabel('0.8')
+  const label95 = intervalLabel('0.95')
+
   return (
     <div
       className="h-[440px] w-full"
@@ -128,26 +141,26 @@ export default function TrendChart({ payload }: TrendChartProps) {
           {hasForecast && (
             <Area
               dataKey="ci95"
-              name="95% interval"
+              name={label95}
               stroke="none"
               fill={CHART_COLORS.forecast}
               fillOpacity={0.1}
               connectNulls={false}
               isAnimationActive={false}
-              legendType="none"
+              legendType="rect"
               tooltipType="none"
             />
           )}
           {hasForecast && (
             <Area
               dataKey="ci80"
-              name="80% interval"
+              name={label80}
               stroke="none"
               fill={CHART_COLORS.forecast}
               fillOpacity={0.18}
               connectNulls={false}
               isAnimationActive={false}
-              legendType="none"
+              legendType="rect"
               tooltipType="none"
             />
           )}

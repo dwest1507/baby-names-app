@@ -54,3 +54,19 @@ CREATE TABLE IF NOT EXISTS forecasts (
     PRIMARY KEY (name, sex)
 )
 """
+
+# One row per nominal interval level (0.8, 0.95), holding the coverage that
+# level actually achieved across every eligible name's holdout backtest — not
+# a sample. `empirical_coverage` is the fraction of holdout points that fell
+# inside the interval a training-only fit would have published; `n` is the
+# number of holdout points behind that fraction (eligible names x
+# VALIDATION_YEARS). The app must never label a band with `nominal_level` if
+# `empirical_coverage` says otherwise. See
+# docs/adr/0005-truthful-confidence-intervals.md.
+CREATE_CALIBRATION_TABLE = """
+CREATE TABLE IF NOT EXISTS calibration (
+    nominal_level REAL NOT NULL PRIMARY KEY,
+    empirical_coverage REAL NOT NULL,
+    n INTEGER NOT NULL
+)
+"""

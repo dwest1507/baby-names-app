@@ -77,6 +77,30 @@ def get_latest_data_year() -> int | None:
         conn.close()
 
 
+def get_calibration() -> dict[str, dict]:
+    """Measured interval calibration, keyed by nominal level as a string.
+
+    One row per nominal level (0.8, 0.95), written by
+    scripts/precompute_forecasts.py from a holdout backtest across every
+    eligible name. See docs/adr/0005-truthful-confidence-intervals.md.
+    """
+    conn = database.connect()
+    try:
+        rows = conn.execute(
+            "SELECT nominal_level, empirical_coverage, n FROM calibration"
+        ).fetchall()
+        return {
+            str(row["nominal_level"]): {
+                "nominal": row["nominal_level"],
+                "empirical_coverage": row["empirical_coverage"],
+                "n": row["n"],
+            }
+            for row in rows
+        }
+    finally:
+        conn.close()
+
+
 def get_forecast(name: str, sex: str) -> dict | None:
     """The precomputed forecast blob for a name/sex, or None if there isn't one.
 

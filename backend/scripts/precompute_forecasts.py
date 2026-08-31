@@ -44,6 +44,7 @@ def run(db_path: str) -> dict:
     conn.row_factory = sqlite3.Row
     try:
         conn.execute(db_schema.CREATE_FORECASTS_TABLE)
+        conn.execute(db_schema.CREATE_CALIBRATION_TABLE)
 
         (latest_year,) = conn.execute("SELECT MAX(year) FROM names").fetchone()
 
@@ -58,6 +59,15 @@ def run(db_path: str) -> dict:
         for row in rows:
             groups[(row["name"].lower(), row["sex"])].append(dict(row))
 
+        # Every eligible name's holdout backtest (already run inside
+        # fit_forecast -> _validate) checks whether the actual holdout value
+        # fell inside the interval a training-only fit would have published.
+        # Aggregating those hits/misses across the whole batch — not a sample
+        # — is what calibrates the published interval labels. See
+        # docs/adr/0005-truthful-confidence-intervals.md.
+        coverage_hits: dict[str, int] = defaultdict(int)
+        coverage_n: dict[str, int] = defaultdict(int)
+
         conn.execute("DELETE FROM forecasts")
         eligible = 0
         for (lowered_name, sex), history in groups.items():
@@ -66,10 +76,29 @@ def run(db_path: str) -> dict:
                 continue
             eligible += 1
             stored = forecast.fit_forecast(history)
+
+            validation = stored.get("validation")
+            if validation is not None:
+                coverage = validation.pop("coverage", None)
+                if coverage:
+                    for level, hits in coverage.items():
+                        coverage_hits[level] += sum(hits)
+                        coverage_n[level] += len(hits)
+
             conn.execute(
                 "INSERT INTO forecasts (name, sex, payload) VALUES (?, ?, ?)",
                 (lowered_name, sex, json.dumps(stored)),
             )
+
+        conn.execute("DELETE FROM calibration")
+        for level in coverage_n:
+            n = coverage_n[level]
+            empirical_coverage = coverage_hits[level] / n if n else 0.0
+            conn.execute(
+                "INSERT INTO calibration (nominal_level, empirical_coverage, n) VALUES (?, ?, ?)",
+                (float(level), empirical_coverage, n),
+            )
+
         conn.commit()
     finally:
         conn.close()
@@ -78,6 +107,10 @@ def run(db_path: str) -> dict:
         "groups": len(groups),
         "eligible": eligible,
         "seconds": time.monotonic() - started,
+        "calibration": {
+            level: coverage_hits[level] / coverage_n[level] if coverage_n[level] else 0.0
+            for level in coverage_n
+        },
     }
 
 
@@ -87,6 +120,8 @@ def main() -> None:
     print(f"Name/sex pairs:       {result['groups']:,}")
     print(f"Eligible & forecast:  {result['eligible']:,}")
     print(f"Took:                 {result['seconds']:.1f}s")
+    for level, coverage in sorted(result["calibration"].items()):
+        print(f"Coverage @ {level}:        {coverage:.3f}")
 
 
 if __name__ == "__main__":

@@ -97,6 +97,40 @@ def test_forecast():
     assert body["validation"] is not None
 
 
+def test_forecast_validation_carries_skill_against_naive_persistence():
+    # Skill compares the model's holdout MAE against a naive baseline that
+    # simply repeats the last training-observed value. See
+    # docs/adr/0005-truthful-confidence-intervals.md.
+    response = client.get("/api/names/emma/forecast", params={"sex": "F"})
+    assert response.status_code == 200
+    skill = response.json()["validation"]["skill"]
+    assert isinstance(skill, float)
+    assert skill <= 1.0
+
+
+def test_forecast_carries_measured_interval_calibration():
+    # The published bands must be labelled with the coverage they actually
+    # achieve, measured across every eligible name's holdout backtest — not
+    # the nominal level. See docs/adr/0005-truthful-confidence-intervals.md.
+    response = client.get("/api/names/emma/forecast", params={"sex": "F"})
+    assert response.status_code == 200
+    calibration = response.json()["calibration"]
+    assert set(calibration) == {"0.8", "0.95"}
+    for level, key in ((0.8, "0.8"), (0.95, "0.95")):
+        entry = calibration[key]
+        assert entry["nominal"] == level
+        assert 0.0 <= entry["empirical_coverage"] <= 1.0
+        assert entry["n"] > 5
+
+
+def test_forecast_calibration_is_absent_when_there_is_no_forecast():
+    response = client.get("/api/names/debra/forecast", params={"sex": "F"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["forecast"] == []
+    assert body["calibration"] is None
+
+
 def test_chat_unavailable_without_key(monkeypatch):
     from app import config
 

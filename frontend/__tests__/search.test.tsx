@@ -56,6 +56,55 @@ function emptyForecast(name: string, history: NameRow[]) {
     forecast: [],
     validation: null,
     model: null,
+    calibration: null,
+  }
+}
+
+/** A forecast with validation, model diagnostics and measured calibration —
+ * everything the "Holdout validation" panel and the chart's interval labels
+ * read from. */
+function fullForecast(
+  name: string,
+  history: NameRow[],
+  overrides: { skill?: number; empirical80?: number; empirical95?: number } = {}
+) {
+  const { skill = 0.25, empirical80 = 0.44, empirical95 = 0.51 } = overrides
+  return {
+    name,
+    sex: 'F' as const,
+    history: history.map((row) => ({ year: row.year, value: row.popularity_percent })),
+    forecast: [2025, 2026, 2027, 2028, 2029].map((year) => ({
+      year,
+      mean: 0.002,
+      lo80: 0.0015,
+      hi80: 0.0025,
+      lo95: 0.001,
+      hi95: 0.003,
+    })),
+    validation: {
+      mae: 0.0000123,
+      rmse: 0.0000234,
+      mape: 12.3,
+      skill,
+      points: [{ year: 2020, actual: 0.002, predicted: 0.0021 }],
+    },
+    model: {
+      order: [1, 1, 1],
+      aic: 100,
+      bic: 105,
+      log_applied: false,
+      diagnostics: {
+        ljung_box: { p_value: 0.5, is_white_noise: true },
+        normality: { p_value: 0.5, is_normal: true },
+        heteroscedasticity: { p_value: 0.5, is_homoscedastic: true },
+        overall_quality: true,
+      },
+      stationarity: { is_stationary: true, adf_pvalue: 0.01, kpss_pvalue: 0.5 },
+    },
+    calibration: {
+      '0.8': { nominal: 0.8, empirical_coverage: empirical80, n: 45 },
+      '0.95': { nominal: 0.95, empirical_coverage: empirical95, n: 45 },
+    },
   }
 }
 
@@ -191,5 +240,74 @@ describe('SearchPage trend chart once the forecast has loaded', () => {
       const path = document.querySelector('.recharts-line-curve')?.getAttribute('d') ?? ''
       expect((path.match(/M/g) ?? []).length).toBe(2)
     })
+  })
+})
+
+describe('SearchPage validation panel', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    getMeta.mockResolvedValue({ min_year: 1960, max_year: NEWEST_YEAR })
+  })
+
+  it('shows validation figures in readable units rather than scientific notation', async () => {
+    const years = Array.from({ length: 15 }, (_, i) => 2010 + i)
+    const history = historyFor('Emma', years)
+    getNameHistory.mockResolvedValue({ name: 'Emma', sex: 'F', history })
+    getNameForecast.mockResolvedValue(fullForecast('Emma', history))
+
+    await search('Emma')
+
+    const heading = await screen.findByText('Holdout validation')
+    const card = heading.parentElement as HTMLElement
+    expect(card).toBeTruthy()
+    expect(card.textContent).not.toMatch(/e[+-]\d/i)
+  })
+
+  it("reports the model's skill against the naive no-change baseline", async () => {
+    const years = Array.from({ length: 15 }, (_, i) => 2010 + i)
+    const history = historyFor('Emma', years)
+    getNameHistory.mockResolvedValue({ name: 'Emma', sex: 'F', history })
+    getNameForecast.mockResolvedValue(fullForecast('Emma', history, { skill: 0.25 }))
+
+    await search('Emma')
+
+    const notice = await screen.findByText(/no change/i)
+    expect(notice).toHaveTextContent('25.0%')
+  })
+
+  it('flags a forecast that performs worse than the naive baseline', async () => {
+    const years = Array.from({ length: 15 }, (_, i) => 2010 + i)
+    const history = historyFor('Emma', years)
+    getNameHistory.mockResolvedValue({ name: 'Emma', sex: 'F', history })
+    getNameForecast.mockResolvedValue(fullForecast('Emma', history, { skill: -0.1 }))
+
+    await search('Emma')
+
+    const notice = await screen.findByText(/worse than.*no change/i)
+    expect(notice).toHaveTextContent('10.0%')
+  })
+})
+
+describe('SearchPage interval labels', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    getMeta.mockResolvedValue({ min_year: 1960, max_year: NEWEST_YEAR })
+  })
+
+  it('labels shaded bands with their measured coverage, not the nominal level', async () => {
+    const years = Array.from({ length: 15 }, (_, i) => 2010 + i)
+    const history = historyFor('Emma', years)
+    getNameHistory.mockResolvedValue({ name: 'Emma', sex: 'F', history })
+    getNameForecast.mockResolvedValue(
+      fullForecast('Emma', history, { empirical80: 0.44, empirical95: 0.51 })
+    )
+
+    await search('Emma')
+
+    await screen.findByLabelText(/trend and forecast for Emma/i)
+    expect(screen.queryByText(/95% interval/i)).toBeNull()
+    expect(screen.queryByText(/80% interval/i)).toBeNull()
+    expect(await screen.findByText(/51% interval/i)).toBeTruthy()
+    expect(await screen.findByText(/44% interval/i)).toBeTruthy()
   })
 })

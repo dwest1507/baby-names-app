@@ -165,7 +165,22 @@ def _forecast(model, log_applied: bool, steps: int) -> dict:
 
 
 def _validate(values: np.ndarray, years: list[int]) -> dict | None:
-    """Refit on all but the last VALIDATION_YEARS and score against the holdout."""
+    """Refit on all but the last VALIDATION_YEARS and score against the holdout.
+
+    This is also the backtest that calibrates the published intervals (see
+    docs/adr/0005-truthful-confidence-intervals.md): the same training-only fit
+    used to score MAE/RMSE/MAPE also produces the 80%/95% intervals it *would*
+    have published, so `coverage` records whether each holdout point actually
+    fell inside them. `scripts/precompute_forecasts.py` aggregates `coverage`
+    across every eligible name into the `calibration` table and strips it
+    before storing this dict, so it never reaches the API response.
+
+    `skill` compares the model's holdout MAE against a naive/persistence
+    baseline — the last training-observed value repeated for every holdout
+    year, the standard "no change" forecast. `skill = 1 - model_mae /
+    naive_mae`: 0 means the model does no better than assuming nothing
+    changes, negative means it does worse.
+    """
     if len(values) < MIN_HISTORY_YEARS + VALIDATION_YEARS:
         return None
 
@@ -176,24 +191,39 @@ def _validate(values: np.ndarray, years: list[int]) -> dict | None:
         return None
 
     try:
-        predicted = _forecast(model, log_applied, VALIDATION_YEARS)["mean"]
+        holdout_forecast = _forecast(model, log_applied, VALIDATION_YEARS)
     except Exception:
         return None
 
+    predicted = holdout_forecast["mean"]
     errors = test - predicted
     mae = float(np.mean(np.abs(errors)))
     rmse = float(np.sqrt(np.mean(errors**2)))
     mape = float(np.mean(np.abs(errors / np.maximum(test, 1e-12))) * 100)
+
+    naive_predicted = np.full(VALIDATION_YEARS, train[-1])
+    naive_mae = float(np.mean(np.abs(test - naive_predicted)))
+    skill = float(1 - mae / naive_mae) if naive_mae > 0 else 0.0
+
+    coverage = {}
+    for level in (0.8, 0.95):
+        interval = holdout_forecast["intervals"][level]
+        coverage[str(level)] = [
+            bool(lo <= actual <= hi)
+            for lo, hi, actual in zip(interval["lower"], interval["upper"], test, strict=True)
+        ]
 
     test_years = years[-VALIDATION_YEARS:]
     return {
         "mae": mae,
         "rmse": rmse,
         "mape": mape,
+        "skill": skill,
         "points": [
             {"year": int(y), "actual": float(a), "predicted": float(p)}
             for y, a, p in zip(test_years, test, predicted, strict=True)
         ],
+        "coverage": coverage,
     }
 
 
@@ -267,7 +297,9 @@ def fit_forecast(history: list[dict]) -> dict:
     return result
 
 
-def build_response(sex: str, history: list[dict], stored: dict | None) -> dict:
+def build_response(
+    sex: str, history: list[dict], stored: dict | None, calibration: dict | None = None
+) -> dict:
     """Compose the API response from history read fresh plus a stored blob.
 
     `stored` is the JSON-decoded `forecasts.payload` for this name/sex, or
@@ -275,6 +307,12 @@ def build_response(sex: str, history: list[dict], stored: dict | None) -> dict:
     the batch ran, or because it has no forecast for any other reason. Either
     way the response shape matches what the endpoint always returned: an
     empty forecast list rather than a missing key. No fitting happens here.
+
+    `calibration` is the batch's measured interval coverage
+    (`queries.get_calibration`), the same for every name — it is None only
+    when there is no forecast to draw bands for. See
+    docs/adr/0005-truthful-confidence-intervals.md: the frontend must label
+    the shaded bands with this measured coverage, not the nominal 80%/95%.
     """
     return {
         "name": history[0]["name"],
@@ -285,4 +323,5 @@ def build_response(sex: str, history: list[dict], stored: dict | None) -> dict:
         "forecast": stored["forecast"] if stored else [],
         "validation": stored["validation"] if stored else None,
         "model": stored["model"] if stored else None,
+        "calibration": calibration if stored else None,
     }

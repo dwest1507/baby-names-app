@@ -271,6 +271,7 @@ export default function SearchPage() {
                   forecast: [],
                   validation: null,
                   model: null,
+                  calibration: null,
                 }}
               />
             )}
@@ -293,13 +294,13 @@ export default function SearchPage() {
                     <div>
                       <div className="text-xs text-[#8a8f98]">MAE</div>
                       <div className="mt-0.5 font-mono text-sm text-[#ededef]">
-                        {validation.mae.toExponential(2)}
+                        {formatPercent(validation.mae, 4)}
                       </div>
                     </div>
                     <div>
                       <div className="text-xs text-[#8a8f98]">RMSE</div>
                       <div className="mt-0.5 font-mono text-sm text-[#ededef]">
-                        {validation.rmse.toExponential(2)}
+                        {formatPercent(validation.rmse, 4)}
                       </div>
                     </div>
                     <div>
@@ -308,6 +309,27 @@ export default function SearchPage() {
                         {validation.mape.toFixed(1)}%
                       </div>
                     </div>
+                  </div>
+                  {/* Skill compares the holdout error against a naive baseline
+                      that just repeats the last observed value — see
+                      docs/adr/0005-truthful-confidence-intervals.md. A
+                      forecast that loses to that baseline is flagged rather
+                      than shown with equal confidence. */}
+                  <div className="mt-4">
+                    {validation.skill >= 0 ? (
+                      <p className="text-xs leading-relaxed text-emerald-400">
+                        Beats the naive “no change” baseline by {formatPercent(validation.skill, 1)}
+                        : on the holdout years, this model&apos;s error was that much smaller than
+                        simply repeating the last recorded value.
+                      </p>
+                    ) : (
+                      <Notice variant="warning">
+                        This forecast performs worse than simply assuming no change — its holdout
+                        error was {formatPercent(Math.abs(validation.skill), 1)} higher than the
+                        naive baseline&apos;s. Treat the forecast and its confidence bands with
+                        caution.
+                      </Notice>
+                    )}
                   </div>
                 </Card>
               )}

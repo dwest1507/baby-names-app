@@ -98,6 +98,30 @@ def test_forecasts_table_holds_only_eligible_names_and_excludes_history(sample_d
     assert ("mateo", "M") not in rows
 
 
+def test_batch_aggregates_holdout_interval_coverage_across_every_eligible_name(sample_db):
+    """The calibration table records empirical coverage measured across the
+    whole batch's holdout backtest, not a single name's 5 holdout points. See
+    docs/adr/0005-truthful-confidence-intervals.md.
+    """
+    conn = sqlite3.connect(sample_db)
+    try:
+        rows = {
+            level: (coverage, n)
+            for level, coverage, n in conn.execute(
+                "SELECT nominal_level, empirical_coverage, n FROM calibration"
+            )
+        }
+    finally:
+        conn.close()
+
+    assert set(rows) == {0.8, 0.95}
+    for _level, (coverage, n) in rows.items():
+        assert 0.0 <= coverage <= 1.0
+        # More than one name's holdout contributed: each eligible name has
+        # exactly VALIDATION_YEARS (5) holdout points.
+        assert n > 5
+
+
 def test_precompute_batch_reads_the_names_table_once_rather_than_per_name(tmp_path):
     """The batch's own decisive performance property — reading the whole
     `names` table once and grouping in memory, rather than issuing one query

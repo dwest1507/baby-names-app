@@ -130,7 +130,7 @@ ask() {
 # a freshly generated secret is deliberately printed in full (see stage 2),
 # since the human has to see it once to copy it somewhere durable.
 ask_secret() {
-  local key="$1" prompt="$2" input
+  local key="$1" prompt="$2" input=""
   printf '  %s%s%s ' "$BOLD" "$prompt" "$RESET"
   read -rs input || true
   printf '\n'
@@ -244,11 +244,15 @@ warn "manager or note before continuing -- it scrolls away with the terminal."
 say ""
 if confirm "Generate a new secret with openssl rand -hex 32?"; then
   SHARED_SECRET=$(openssl rand -hex 32)
+  # Printed in full on purpose: a freshly generated secret has to be visible
+  # once so the human can copy it somewhere durable. A pasted one is not
+  # reprinted -- that would echo to scrollback the value ask_secret just took
+  # care to read hidden.
+  say ""
+  printf '  %s%s%s\n' "$BOLD" "$SHARED_SECRET" "$RESET"
 else
   ask_secret SHARED_SECRET "Paste the existing shared secret to verify against instead:"
 fi
-say ""
-printf '  %s%s%s\n' "$BOLD" "$SHARED_SECRET" "$RESET"
 say ""
 say "Set this as BACKEND_SHARED_SECRET in:"
 step "Railway → your service → Variables"

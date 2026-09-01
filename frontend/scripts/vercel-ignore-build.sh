@@ -11,10 +11,10 @@
 # exit code IS the diff's exit code, once the pathological case below (no
 # parent commit) is handled.
 #
-# Configure in the Vercel project as:
-#   Settings -> Build and Deployment -> Ignored Build Step -> Custom command
-#   -> ./scripts/vercel-ignore-build.sh
-# with the project's Root Directory set to `frontend`. Whether Vercel executes
+# Wired up by `ignoreCommand` in frontend/vercel.json, so no dashboard setting
+# is needed; the equivalent manual control, if you ever want to inspect or
+# override it, is Settings -> Build and Deployment -> Ignored Build Step. Either
+# way the project's Root Directory must be `frontend`. Whether Vercel executes
 # that command from the repo root or from Root Directory is not something we
 # could verify without a live Vercel project (no credentials in this
 # environment) — this script resolves the repo root itself via
@@ -25,18 +25,33 @@ set -eu
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
 
-if ! git rev-parse HEAD^ >/dev/null 2>&1; then
-  # No parent commit -- e.g. the very first push to a fresh history, or a
-  # shallow clone with depth 1 that Vercel hasn't deepened. Nothing to diff
-  # against, so err toward building rather than silently skipping forever.
-  echo "vercel-ignore-build: no parent commit to diff against; building."
+# Pick the base commit to diff against. Vercel sets VERCEL_GIT_PREVIOUS_SHA to
+# the commit of the last deployment for this project, which is the correct base:
+# diffing HEAD^..HEAD only inspects the tip commit, so a push of several commits
+# that touched frontend/ in an earlier commit but not the tip would skip a build
+# that was needed. The clone Vercel gives us is shallow, though, so that commit
+# is often not in the local object graph -- hence the cat-file check and the
+# HEAD^ fallback, which restores the old (tip-only) behaviour rather than
+# failing. That leaves the multi-commit case open on shallow clones; closing it
+# fully would mean deepening the fetch on every build.
+base=""
+if [ -n "${VERCEL_GIT_PREVIOUS_SHA:-}" ] && \
+   git cat-file -e "${VERCEL_GIT_PREVIOUS_SHA}^{commit}" 2>/dev/null; then
+  base="$VERCEL_GIT_PREVIOUS_SHA"
+elif git rev-parse HEAD^ >/dev/null 2>&1; then
+  base=$(git rev-parse HEAD^)
+else
+  # No base at all -- e.g. the very first push to a fresh history, or a shallow
+  # clone with depth 1 that Vercel hasn't deepened. Nothing to diff against, so
+  # err toward building rather than silently skipping forever.
+  echo "vercel-ignore-build: no base commit to diff against; building."
   exit 1
 fi
 
-if git diff --quiet HEAD^ HEAD -- frontend; then
-  echo "vercel-ignore-build: no changes under frontend/; skipping the build."
+if git diff --quiet "$base" HEAD -- frontend; then
+  echo "vercel-ignore-build: no changes under frontend/ since $base; skipping the build."
   exit 0
 else
-  echo "vercel-ignore-build: changes detected under frontend/; proceeding with the build."
+  echo "vercel-ignore-build: changes detected under frontend/ since $base; proceeding with the build."
   exit 1
 fi

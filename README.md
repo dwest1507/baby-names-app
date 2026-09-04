@@ -1,233 +1,172 @@
-# Baby Names App
+# Baby Names Explorer
 
-A comprehensive data pipeline and Streamlit application for exploring baby names popularity data from the Social Security Administration, featuring machine learning models for predicting future name popularity trends.
+A modern web app for exploring 145 years of baby name popularity from the Social Security
+Administration dataset — interactive trend charts, 5-year ARIMA forecasts with confidence
+intervals, and an AI chatbot that answers questions about the data in natural language.
 
-## Features
+**Stack:** Next.js 16 · React 19 · TypeScript · Tailwind CSS v4 · Recharts · Python FastAPI · statsmodels · Groq
 
-- **Data Pipeline**: Automatically downloads and processes baby names data from SSA.gov using Selenium
-- **Machine Learning Models**: Multiple ML models (Linear Regression, Random Forest, XGBoost, LSTM) for predicting name popularity
-- **Interactive Visualization**: Streamlit app with interactive charts and search functionality
-- **Name Search**: Search for specific baby names and view their popularity metrics
-- **Trend Analysis**: View popularity trends and rankings with predictive capabilities
-- **Comparison Tools**: Compare multiple names side by side
-- **Future Predictions**: Predict future popularity trends using trained ML models
+> This app was previously a single-file Streamlit app (`app.py`). It has been refactored into
+> a frontend/backend architecture with a dark, Linear-style design system matching the
+> [portfolio site](https://github.com/dwest1507/portfolio).
 
-## Installation
+---
 
-1. Clone this repository:
+## Quick Start
+
+**Prerequisites:** Node.js 20+, Python 3.11+, [uv](https://github.com/astral-sh/uv)
+
 ```bash
-git clone <repository-url>
-cd baby-names-app
+# Install all dependencies
+make install
+
+# Build a small sample database (the real one is a published build artifact, see below)
+make sample-db
+
+# Run frontend + backend together
+NAMES_DB_PATH=data/sample_names.db make dev
 ```
 
-2. Create and activate a virtual environment:
-```bash
-# Create virtual environment
-python -m venv .venv
+| Service     | URL                        |
+| ----------- | -------------------------- |
+| Frontend    | http://localhost:3000      |
+| Backend API | http://localhost:8000      |
+| API docs    | http://localhost:8000/docs |
 
-# Activate virtual environment
-# On Windows:
-.venv\Scripts\activate
-# On macOS/Linux:
-source .venv/bin/activate
+To enable the AI chatbot, create `backend/.env`:
+
+```
+GROQ_API_KEY=your_key_here
 ```
 
-3. Install the required dependencies:
-```bash
-pip install -r requirements.txt
-```
+---
 
-## Usage
-
-### Quick Start
-
-Run the complete pipeline and start the app:
-```bash
-# Run the Jupyter notebook for data processing and ML model training
-jupyter notebook data_pipeline.ipynb
-```
-
-This will:
-1. Download and process the baby names data from SSA.gov using Selenium
-2. Train multiple machine learning models for name popularity prediction
-3. Save the best performing model for use in the Streamlit app
-
-### Manual Steps
-
-If you prefer to run steps manually:
-
-1. **Run the data pipeline and ML training**:
-```bash
-jupyter notebook data_pipeline.ipynb
-```
-Execute all cells to:
-- Download data from SSA.gov
-- Process and clean the data
-- Train ML models (Linear Regression, Random Forest, XGBoost, LSTM)
-- Evaluate model performance and select the best model
-- Save models for production use
-
-2. **Start the Streamlit app**:
-```bash
-streamlit run app.py
-```
-
-## Data Pipeline
-
-The `data_pipeline.ipynb` Jupyter notebook provides a comprehensive data processing and machine learning pipeline:
-
-### Data Processing:
-- Downloads the complete baby names dataset from SSA.gov (names.zip) using Selenium
-- Extracts and processes data from all years (1880-2024) in the zip file
-- Creates a comprehensive dataset with all name-sex combinations across all years
-- Calculates popularity metrics (total count, popularity percentage, popularity rank)
-- Saves the processed data to SQLite database (`data/names.db`)
-
-### Machine Learning Pipeline:
-- **Data Preparation**: Creates time series features with 5-year lookback windows
-- **Feature Engineering**: Includes historical trends, volatility, and temporal patterns
-- **Model Training**: Trains 4 different ML models:
-  - Linear Regression (for interpretability)
-  - Random Forest (for robust predictions)
-  - XGBoost (for high performance)
-  - LSTM (for complex time series patterns)
-- **Model Evaluation**: Comprehensive performance assessment with RMSE, MAE, and R² metrics
-- **Model Selection**: Automatically selects the best performing model
-- **Model Persistence**: Saves trained models and scalers for production use
-
-## Streamlit App
-
-The `app.py` provides:
-- **Name Search**: Enter a baby name to see its popularity metrics and trends
-- **Top Names**: View the most popular names by gender and year
-- **Trend Analysis**: Interactive charts showing popularity trends over time
-- **Future Predictions**: ML-powered predictions for future name popularity
-- **Comparison Tools**: Compare multiple names side by side
-- **Interactive Charts**: Built with Plotly for rich visualizations
-
-## Deployment
-
-The app reads every page from a SQLite database. Before deploying, make sure that
-database is actually reachable in the deployed environment.
-
-### The database is not in the Git checkout
-
-`data/names.db` is tracked with Git LFS (see `.gitattributes`), and the object is
-roughly 1.1 GB. **Streamlit Community Cloud clones repositories without resolving Git
-LFS objects**, so the deployed checkout contains only a 135-byte pointer file rather
-than the database. Reading it raises `DatabaseError: file is not a database`.
-
-The app now detects this at startup and stops with an explanatory message instead of
-failing deep inside a query.
-
-### Supplying the database
-
-Point the app at a copy it can actually read, using either Streamlit secrets
-(`.streamlit/secrets.toml`) or environment variables:
-
-| Setting | Purpose | Default |
-| --- | --- | --- |
-| `NAMES_DB_PATH` | Path to a local `names.db` | `data/names.db` |
-| `NAMES_DB_REPO` | Hugging Face repo to download the database from when no local copy is usable | unset |
-| `NAMES_DB_FILE` | Filename to fetch from that repo | `names.db` |
-| `NAMES_DB_REPO_TYPE` | `dataset` or `model` | `dataset` |
-| `HF_TOKEN` | Token for a private Hugging Face repo | unset |
-| `GROQ_API_KEY` | Required for the AI Chatbot page | unset |
-
-Example `.streamlit/secrets.toml`:
-
-```toml
-NAMES_DB_REPO = "your-username/baby-names"
-NAMES_DB_FILE = "names.db"
-GROQ_API_KEY = "your-key"
-```
-
-The download is cached with `st.cache_resource`, so it runs once per app process.
-
-### A note on database size
-
-Streamlit Community Cloud gives each app a limited amount of disk and memory, and a
-1.1 GB database is likely to exceed it even when downloaded at runtime. The app only
-queries a single `names` table with six columns, so rebuilding a slimmer database
-(dropping unused tables and indexes) is the more durable fix.
-
-## Data Structure
-
-The processed data includes:
-- `name`: Baby name
-- `sex`: M (Male) or F (Female)
-- `total_count`: Number of occurrences in a specific year
-- `year`: Year of birth (1880-2024)
-- `popularity_percent`: Relative popularity as percentage of total births for that sex/year
-- `popularity_rank`: Ranking within the sex/year (1 = most popular)
-
-## Machine Learning Models
-
-The pipeline trains and evaluates multiple models for name popularity prediction:
-
-### Models Included:
-1. **Linear Regression**: Fast, interpretable, good baseline
-2. **Random Forest**: Robust, handles non-linear relationships
-3. **XGBoost**: High performance, good for production
-4. **LSTM**: Deep learning for complex time series patterns
-
-### Features Used:
-- Historical popularity percentages (5-year lookback)
-- Historical total counts (5-year lookback)
-- Historical popularity ranks (5-year lookback)
-- Trend features (linear trends in popularity and counts)
-- Volatility measures (standard deviation of recent popularity)
-- Temporal features (normalized year)
-
-### Model Selection:
-The pipeline automatically selects the best performing model based on RMSE (Root Mean Square Error) and provides comprehensive performance analysis including MAE and R² scores.
-
-## Requirements
-
-- Python 3.7+
-- pandas
-- streamlit
-- requests
-- beautifulsoup4
-- plotly
-- lxml
-- selenium
-- scikit-learn
-- xgboost
-- tensorflow
-- joblib
-- jupyter
-- matplotlib
-- numpy
-
-## File Structure
+## Project Structure
 
 ```
 baby-names-app/
-├── data_pipeline.ipynb          # Main data processing and ML training notebook
-├── app.py                       # Streamlit application
-├── requirements.txt             # Python dependencies
-├── README.md                    # This file
-└── data/                        # Data directory
-    ├── names.zip               # Downloaded SSA data
-    ├── names.db                # SQLite database with processed data
-    ├── best_model_*.pkl        # Trained ML models
-    ├── scaler.pkl              # Feature scaler
-    ├── feature_names.pkl       # Feature names for model interpretation
-    └── yob*.txt                # Individual year data files
+├── frontend/               Next.js 16 app
+│   ├── app/                Pages: home, /explore, /search, /chat + /api proxy
+│   ├── components/         Layout, UI primitives, recharts charts
+│   └── lib/                Typed API client and formatters
+├── backend/                Python FastAPI
+│   ├── app/
+│   │   ├── database.py     names.db resolution (local path or Hugging Face download)
+│   │   ├── routes/         /api/health, /api/meta, /api/top-names, /api/names, /api/chat
+│   │   └── services/       Queries, ARIMA forecasting, Groq SQL chatbot
+│   ├── scripts/            DB build/publish/verify scripts, sample database generator
+│   ├── Dockerfile          Bakes the database in at build time (see below)
+│   └── tests/              Pytest suite (runs against a generated fixture DB)
+├── data/                   Build artifacts only (gitignored — see "The Database")
+├── data_pipeline.ipynb     Data download/processing + ML training notebook
+├── model_exploration.ipynb Model experimentation notebook
+└── Makefile                Dev automation commands
 ```
+
+## Features
+
+- **Top Names** (`/explore`) — the most popular names for any year since 1880, filterable by
+  sex, as a bar chart and table
+- **Name Search** (`/search`) — full popularity history for any name with current-rank stat
+  tiles, a 5-year ARIMA forecast (80%/95% confidence intervals), 5-year holdout validation
+  metrics (MAE/RMSE/MAPE), and residual diagnostics (Ljung–Box, Jarque–Bera, ARCH, ADF)
+- **AI Chat** (`/chat`) — natural-language questions are translated to SQL by Groq, executed
+  against a read-only connection with keyword guards and row caps, and phrased back as an
+  answer; the generated SQL is shown with every response
+
+## Architecture
+
+```
+Browser → Next.js (:3000)                      Python FastAPI (:8000)
+            ├── Static pages                     ├── GET  /api/top-names, /api/names/{name}
+            │   (home, explore, search, chat)    ├── GET  /api/names/{name}/forecast (ARIMA)
+            └── /api/* (proxy) ────────────────→ ├── POST /api/chat (Groq SQL chatbot)
+                                                 ├── SQLite names.db (read-only)
+                                                 └── Rate limiting (slowapi)
+```
+
+The browser only ever talks to the Next.js origin; a catch-all route handler
+(`frontend/app/api/[...path]/route.ts`) proxies allowed API paths to the backend
+(configure the target with `NAMES_API_URL`, default `http://localhost:8000`).
+
+## Development
+
+```bash
+make dev-frontend    # Next.js on :3000
+make dev-backend     # FastAPI on :8000
+make test            # pytest + vitest
+make lint            # ruff + eslint + tsc + prettier check
+make format          # auto-format both sides
+make stop            # kill dev servers
+```
+
+## The Database
+
+The app queries a single `names` table:
+
+| Column               | Meaning                                             |
+| -------------------- | --------------------------------------------------- |
+| `name`               | Baby name                                           |
+| `sex`                | `M` or `F`                                          |
+| `year`               | 1880–2024                                           |
+| `total_count`        | Babies registered with this name that year          |
+| `popularity_percent` | Share of births for that sex/year (fraction)        |
+| `popularity_rank`    | Rank within the sex/year (1 = most popular)         |
+
+The database is not stored in the repository — it's a **published build artifact**: pruned to
+observed rows only, indexed, carrying precomputed forecasts (`names` and `forecasts` tables),
+built with `make build-db` + `make precompute-forecasts`, verified with `make verify-db`, and
+published to a public Hugging Face dataset with `make publish-db` (see
+`docs/adr/0006-database-as-published-build-artifact.md`). The backend resolves a usable copy in
+this order: a local file at `NAMES_DB_PATH`, or — if unset — a download from `NAMES_DB_REPO`. It
+distinguishes a missing file, an unresolved Git LFS pointer (left over from before this database
+moved to Hugging Face), and a non-database file, and reports whichever it finds via
+`/api/health`. Configure it with (env vars or `backend/.env`):
+
+| Setting              | Purpose                                                      | Default         |
+| -------------------- | ------------------------------------------------------------ | --------------- |
+| `NAMES_DB_PATH`      | Path to a local `names.db`                                   | `data/names.db` |
+| `NAMES_DB_REPO`      | Hugging Face repo to download from when no local copy exists | unset           |
+| `NAMES_DB_FILE`      | Filename to fetch from that repo                             | `names.db`      |
+| `NAMES_DB_REPO_TYPE` | `dataset` or `model`                                         | `dataset`       |
+| `HF_TOKEN`           | Token for a private Hugging Face repo (the published dataset is public and needs none) | unset |
+| `GROQ_API_KEY`       | Required for the AI chatbot                                  | unset           |
+| `GROQ_MODEL`         | Groq model for the chatbot                                   | `openai/gpt-oss-120b` |
+| `ALLOWED_ORIGINS`    | CORS origins for the backend (defence in depth, not the guard) | `http://localhost:3000` |
+| `BACKEND_SHARED_SECRET` | Required on every backend endpoint except `/api/health`; set to the same value on the frontend | unset |
+| `APP_ENV`            | `production` makes a missing shared secret fail closed        | `development`   |
+| `SENTRY_DSN`         | Reports backend exceptions to Sentry; unset (local dev, CI) is a complete no-op | unset |
+
+For local development, `make sample-db` generates a small database with a handful of names and
+plausible multi-decade trends — the full dataset has never been required for `make dev`.
+
+## Data Pipeline & ML Notebooks
+
+The Jupyter notebooks are unchanged from the original project:
+
+- `data_pipeline.ipynb` downloads the SSA dataset (Selenium), computes popularity metrics,
+  writes `data/names.db`, and trains ML models (Linear Regression, Random Forest, XGBoost,
+  LSTM) for name popularity prediction
+- `model_exploration.ipynb` contains model experimentation
+
+Install their dependencies with `pip install -r requirements.txt` (the web app itself uses
+`backend/pyproject.toml` and `frontend/package.json`).
+
+## Deployment
+
+The frontend deploys to Vercel and the backend to Railway (as a Docker image), both via the
+platforms' own git integrations from `main`. See **[docs/deployment.md](docs/deployment.md)** for
+the full picture — first-time setup in dependency order, platform config files
+(`frontend/vercel.json`, `backend/railway.json`), known traps, failure-symptom tables, rollback,
+and the environment variable reference — and **[docs/ci-cd.md](docs/ci-cd.md)** for the exact
+branch-protection check names. `scripts/deploy-wizard.sh` walks the manual dashboard steps
+interactively and verifies a deployment from outside without writing to either platform.
 
 ## Data Source
 
-Data is sourced from the [Social Security Administration's baby names database](https://www.ssa.gov/oact/babynames/limits.html).
-
-## Model Performance
-
-The machine learning pipeline provides comprehensive model evaluation:
-- **Performance Metrics**: RMSE, MAE, and R² scores for each model
-- **Feature Importance**: Analysis of which features contribute most to predictions
-- **Model Comparison**: Side-by-side comparison of all trained models
-- **Visualization**: Charts showing prediction accuracy and feature importance
+Data is sourced from the
+[Social Security Administration's baby names database](https://www.ssa.gov/oact/babynames/limits.html)
+and updated yearly.
 
 ## Versioning
 

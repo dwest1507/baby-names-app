@@ -1,4 +1,6 @@
-streamlit==1.62.0
+# Dependencies for the Jupyter notebooks (data_pipeline.ipynb, model_exploration.ipynb).
+# The web app has its own dependency files: backend/pyproject.toml (uv) and
+# frontend/package.json (npm).
 pandas==3.0.5
 requests==2.34.2
 plotly==6.9.0
@@ -15,4 +17,3 @@ scikit-learn==1.9.0
 scipy==1.18.1
 statsmodels==0.14.6
 xgboost==3.4.1
-groq==1.6.0

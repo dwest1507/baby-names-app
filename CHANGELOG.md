@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.0.0](https://github.com/dwest1507/baby-names-app/compare/baby-names-app-v0.1.0...baby-names-app-v1.0.0) (2026-09-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* Complete architectural rewrite from Streamlit to Next.js + FastAPI.
+
+### Features
+
+* migrate from Streamlit to Next.js and FastAPI ([fe2fd1f](https://github.com/dwest1507/baby-names-app/commit/fe2fd1fd5295e7d524e5521d73adfc79db984820))
+
+
+### Bug Fixes
+
+* **backend:** declare __all__ in config to resolve CodeQL unused global variable alerts ([be6c0d5](https://github.com/dwest1507/baby-names-app/commit/be6c0d53b649966d2bf9289c77d8cd5819c3e240))
+
+
+### Performance Improvements
+
+* **forecast:** parallelize precompute batch and optimize ARIMA search grid ([a50bd4e](https://github.com/dwest1507/baby-names-app/commit/a50bd4ee0a03f5552e2b8d279365337397dc90a9))
+
 ## 0.1.0 (2026-08-30)
 
 

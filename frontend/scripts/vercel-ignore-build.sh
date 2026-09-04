@@ -34,9 +34,16 @@ cd "$repo_root"
 # HEAD^ fallback, which restores the old (tip-only) behaviour rather than
 # failing. That leaves the multi-commit case open on shallow clones; closing it
 # fully would mean deepening the fetch on every build.
+#
+# If VERCEL_GIT_PREVIOUS_SHA is unset or empty, this is the initial deployment of
+# the project on Vercel: always proceed with the build.
+if [ -z "${VERCEL_GIT_PREVIOUS_SHA:-}" ]; then
+  echo "vercel-ignore-build: initial deployment (no previous SHA); proceeding with the build."
+  exit 1
+fi
+
 base=""
-if [ -n "${VERCEL_GIT_PREVIOUS_SHA:-}" ] && \
-   git cat-file -e "${VERCEL_GIT_PREVIOUS_SHA}^{commit}" 2>/dev/null; then
+if git cat-file -e "${VERCEL_GIT_PREVIOUS_SHA}^{commit}" 2>/dev/null; then
   base="$VERCEL_GIT_PREVIOUS_SHA"
 elif git rev-parse HEAD^ >/dev/null 2>&1; then
   base=$(git rev-parse HEAD^)

@@ -5,6 +5,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+__all__ = [
+    "ALLOWED_ORIGINS",
+    "APP_ENV",
+    "BACKEND_SHARED_SECRET",
+    "DEFAULT_DB_PATH",
+    "GROQ_API_KEY",
+    "GROQ_MODEL",
+    "HF_TOKEN",
+    "IS_PRODUCTION",
+    "NAMES_DB_FILE",
+    "NAMES_DB_PATH",
+    "NAMES_DB_REPO",
+    "NAMES_DB_REPO_TYPE",
+    "REPO_ROOT",
+    "SENTRY_DSN",
+]
+
 # The chatbot degrades gracefully when no key is configured, so this is optional
 GROQ_API_KEY: str | None = os.environ.get("GROQ_API_KEY")
 GROQ_MODEL: str = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")

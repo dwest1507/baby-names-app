@@ -62,3 +62,17 @@ def test_write_rejected_by_readonly_connection():
         assert raised
     finally:
         conn.close()
+
+
+def test_schema_context_describes_suppression_and_sparsity():
+    from app.services.chatbot import SCHEMA_CONTEXT
+
+    text = SCHEMA_CONTEXT.lower()
+    # The table is sparse, and every row that exists is an observation of at
+    # least five births — the source suppresses anything smaller.
+    assert "at least 5" in text
+    assert "missing row" in text
+    assert "fewer than 5, or none" in text
+    assert "not zero" in text
+    # Averages must be taken over the years present, not a padded year range.
+    assert "years present" in text

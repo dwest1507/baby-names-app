@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import Card from '@/components/ui/Card'
 import Notice from '@/components/ui/Notice'
 import Section from '@/components/layout/Section'
@@ -9,12 +9,17 @@ import Tag from '@/components/ui/Tag'
 import TrendChart from '@/components/charts/TrendChart'
 import {
   ApiError,
+  getMeta,
   getNameForecast,
   getNameHistory,
   type ForecastPayload,
   type NameRow,
 } from '@/lib/api'
 import { formatCount, formatPercent, formatRank } from '@/lib/format'
+
+// Mirrors MIN_HISTORY_YEARS in backend/app/services/forecast.py: below this many
+// recorded years the backend declines to fit a model.
+const MIN_FORECAST_HISTORY_YEARS = 10
 
 const inputClass =
   'h-11 w-full rounded-lg border border-white/[0.08] bg-white/[0.04] px-4 text-sm text-[#ededef] placeholder-[#8a8f98]/60 transition-all duration-150 focus:border-[#0ea5e9]/50 focus:bg-white/[0.06] focus:shadow-[0_0_0_3px_rgba(14,165,233,0.15)] focus:outline-none'
@@ -24,10 +29,18 @@ interface StatTileProps {
   value: string
   delta?: number
   deltaLabel?: string
+  comparisonYear?: number
   invertDelta?: boolean
 }
 
-function StatTile({ label, value, delta, deltaLabel, invertDelta = false }: StatTileProps) {
+function StatTile({
+  label,
+  value,
+  delta,
+  deltaLabel,
+  comparisonYear,
+  invertDelta = false,
+}: StatTileProps) {
   const improving = delta !== undefined && (invertDelta ? delta < 0 : delta > 0)
   return (
     <Card variant="default" className="p-5">
@@ -43,7 +56,9 @@ function StatTile({ label, value, delta, deltaLabel, invertDelta = false }: Stat
           {deltaLabel}
         </div>
       )}
-      {delta === 0 && <div className="mt-1 text-xs text-[#8a8f98]">unchanged vs prior year</div>}
+      {delta === 0 && comparisonYear !== undefined && (
+        <div className="mt-1 text-xs text-[#8a8f98]">unchanged vs {comparisonYear}</div>
+      )}
     </Card>
   )
 }
@@ -68,6 +83,15 @@ export default function SearchPage() {
   const [loading, setLoading] = useState(false)
   const [forecastLoading, setForecastLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [latestDataYear, setLatestDataYear] = useState<number | null>(null)
+
+  // The newest year present in the data decides whether a name is still in
+  // current use; it is read from the data rather than hardcoded.
+  useEffect(() => {
+    getMeta()
+      .then((meta) => setLatestDataYear(meta.max_year))
+      .catch(() => setLatestDataYear(null))
+  }, [])
 
   function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -102,6 +126,31 @@ export default function SearchPage() {
   const previous = history?.[history.length - 2]
   const validation = forecast?.validation ?? null
   const model = forecast?.model ?? null
+  const observedYears = history?.length ?? 0
+  const forecastAbsent = forecast !== null && forecast.forecast.length === 0
+  const notInCurrentUse =
+    latest !== undefined && latestDataYear !== null && latest.year < latestDataYear
+
+  // History is sparse, so "the previous year" can be years earlier. Say which
+  // year the headline figures describe, and which year they are compared with.
+  const statsCaption = latest
+    ? previous
+      ? `Most recent recorded year for ${displayName}: ${latest.year}, compared with ${previous.year}, the previous year it was recorded.`
+      : `Most recent recorded year for ${displayName}: ${latest.year}.`
+    : ''
+
+  // A forecast can be missing for two quite different reasons, and saying which
+  // one it is is the difference between an explanation and a silent gap.
+  const forecastAbsenceReason = ((): string | null => {
+    if (!forecastAbsent || !latest) return null
+    if (notInCurrentUse) {
+      return `No forecast: ${displayName} is not in current use. It was last recorded in ${latest.year}, and forecasts are only produced for names still recorded in ${latestDataYear}.`
+    }
+    if (observedYears < MIN_FORECAST_HISTORY_YEARS) {
+      return `No forecast: there is not enough history for ${displayName}. Forecasting needs at least ${MIN_FORECAST_HISTORY_YEARS} recorded years, and ${displayName} has ${observedYears}.`
+    }
+    return `No forecast: a model could not be fitted for ${displayName}.`
+  })()
 
   return (
     <Section>
@@ -111,8 +160,9 @@ export default function SearchPage() {
           Name Search
         </h1>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[#8a8f98]">
-          Look up any name for its popularity history since 1880, plus a 5-year ARIMA forecast with
-          confidence intervals and holdout validation.
+          Look up any name for the years it was actually recorded, plus a 5-year ARIMA forecast with
+          confidence intervals and holdout validation. Forecasts are produced only for names still
+          in use in the most recent year of data.
         </p>
       </div>
 
@@ -151,37 +201,45 @@ export default function SearchPage() {
       {history && latest && (
         <div className="space-y-8">
           {/* Stat tiles */}
-          <div className="grid gap-4 sm:grid-cols-3">
-            <StatTile
-              label={`Rank in ${latest.year}`}
-              value={formatRank(latest.popularity_rank)}
-              delta={previous ? previous.popularity_rank - latest.popularity_rank : undefined}
-              deltaLabel={
-                previous
-                  ? `${Math.abs(latest.popularity_rank - previous.popularity_rank)} places vs ${previous.year}`
-                  : undefined
-              }
-            />
-            <StatTile
-              label={`Share of ${sex === 'F' ? 'female' : 'male'} births in ${latest.year}`}
-              value={formatPercent(latest.popularity_percent)}
-              delta={previous ? latest.popularity_percent - previous.popularity_percent : undefined}
-              deltaLabel={
-                previous
-                  ? `${formatPercent(Math.abs(latest.popularity_percent - previous.popularity_percent), 4)} vs ${previous.year}`
-                  : undefined
-              }
-            />
-            <StatTile
-              label={`Babies named ${displayName} in ${latest.year}`}
-              value={formatCount(latest.total_count)}
-              delta={previous ? latest.total_count - previous.total_count : undefined}
-              deltaLabel={
-                previous
-                  ? `${formatCount(Math.abs(latest.total_count - previous.total_count))} vs ${previous.year}`
-                  : undefined
-              }
-            />
+          <div className="space-y-3">
+            <p className="text-xs text-[#8a8f98]">{statsCaption}</p>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <StatTile
+                label={`Rank in ${latest.year}`}
+                value={formatRank(latest.popularity_rank)}
+                delta={previous ? previous.popularity_rank - latest.popularity_rank : undefined}
+                deltaLabel={
+                  previous
+                    ? `${Math.abs(latest.popularity_rank - previous.popularity_rank)} places vs ${previous.year}`
+                    : undefined
+                }
+                comparisonYear={previous?.year}
+              />
+              <StatTile
+                label={`Share of ${sex === 'F' ? 'female' : 'male'} births in ${latest.year}`}
+                value={formatPercent(latest.popularity_percent)}
+                delta={
+                  previous ? latest.popularity_percent - previous.popularity_percent : undefined
+                }
+                deltaLabel={
+                  previous
+                    ? `${formatPercent(Math.abs(latest.popularity_percent - previous.popularity_percent), 4)} vs ${previous.year}`
+                    : undefined
+                }
+                comparisonYear={previous?.year}
+              />
+              <StatTile
+                label={`Babies named ${displayName} in ${latest.year}`}
+                value={formatCount(latest.total_count)}
+                delta={previous ? latest.total_count - previous.total_count : undefined}
+                deltaLabel={
+                  previous
+                    ? `${formatCount(Math.abs(latest.total_count - previous.total_count))} vs ${previous.year}`
+                    : undefined
+                }
+                comparisonYear={previous?.year}
+              />
+            </div>
           </div>
 
           {/* Trend + forecast chart */}
@@ -213,8 +271,12 @@ export default function SearchPage() {
                   forecast: [],
                   validation: null,
                   model: null,
+                  calibration: null,
                 }}
               />
+            )}
+            {forecastAbsenceReason && (
+              <p className="mt-4 text-xs leading-relaxed text-[#8a8f98]">{forecastAbsenceReason}</p>
             )}
           </Card>
 
@@ -232,13 +294,13 @@ export default function SearchPage() {
                     <div>
                       <div className="text-xs text-[#8a8f98]">MAE</div>
                       <div className="mt-0.5 font-mono text-sm text-[#ededef]">
-                        {validation.mae.toExponential(2)}
+                        {formatPercent(validation.mae, 4)}
                       </div>
                     </div>
                     <div>
                       <div className="text-xs text-[#8a8f98]">RMSE</div>
                       <div className="mt-0.5 font-mono text-sm text-[#ededef]">
-                        {validation.rmse.toExponential(2)}
+                        {formatPercent(validation.rmse, 4)}
                       </div>
                     </div>
                     <div>
@@ -247,6 +309,27 @@ export default function SearchPage() {
                         {validation.mape.toFixed(1)}%
                       </div>
                     </div>
+                  </div>
+                  {/* Skill compares the holdout error against a naive baseline
+                      that just repeats the last observed value — see
+                      docs/adr/0005-truthful-confidence-intervals.md. A
+                      forecast that loses to that baseline is flagged rather
+                      than shown with equal confidence. */}
+                  <div className="mt-4">
+                    {validation.skill >= 0 ? (
+                      <p className="text-xs leading-relaxed text-emerald-400">
+                        Beats the naive “no change” baseline by {formatPercent(validation.skill, 1)}
+                        : on the holdout years, this model&apos;s error was that much smaller than
+                        simply repeating the last recorded value.
+                      </p>
+                    ) : (
+                      <Notice variant="warning">
+                        This forecast performs worse than simply assuming no change — its holdout
+                        error was {formatPercent(Math.abs(validation.skill), 1)} higher than the
+                        naive baseline&apos;s. Treat the forecast and its confidence bands with
+                        caution.
+                      </Notice>
+                    )}
                   </div>
                 </Card>
               )}

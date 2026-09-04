@@ -24,7 +24,11 @@ class MockIntersectionObserver {
   }
 }
 
-vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
+// Route-handler tests run in the node environment, where there is no DOM to
+// patch and nothing below applies.
+if (typeof window !== 'undefined') {
+  vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
 
-// jsdom does not implement scrollIntoView (used by ChatbotWidget autoscroll)
-window.HTMLElement.prototype.scrollIntoView = vi.fn()
+  // jsdom does not implement scrollIntoView (used by ChatbotWidget autoscroll)
+  window.HTMLElement.prototype.scrollIntoView = vi.fn()
+}

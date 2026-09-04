@@ -57,8 +57,24 @@ export interface Validation {
   mae: number
   rmse: number
   mape: number
+  // Model's holdout MAE compared with a naive "no change" baseline that
+  // repeats the last training-observed value: 1 - model_mae / naive_mae.
+  // 0 means no better than assuming nothing changed; negative means worse.
+  skill: number
   points: ValidationPoint[]
 }
+
+export interface CalibrationLevel {
+  nominal: number
+  empirical_coverage: number
+  n: number
+}
+
+// Keyed by nominal level as a string ("0.8", "0.95"). Measured across every
+// eligible name's holdout backtest by the precompute batch — see
+// docs/adr/0005-truthful-confidence-intervals.md. The shaded bands must be
+// labelled with `empirical_coverage`, not `nominal`.
+export type Calibration = Record<string, CalibrationLevel>
 
 export interface DiagnosticTest {
   p_value: number
@@ -101,6 +117,7 @@ export interface ForecastPayload {
   forecast: ForecastPoint[]
   validation: Validation | null
   model: Model | null
+  calibration: Calibration | null
 }
 
 export interface ChatEntry {

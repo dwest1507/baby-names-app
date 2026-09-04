@@ -25,3 +25,16 @@ def test_name_history_case_insensitive():
 
 def test_name_history_missing_name():
     assert queries.get_name_history("Zzyzx", "M") == []
+
+
+def test_top_names_excludes_padded_zero_rows():
+    # Debra is absent from 2015, so the padding gives her a zero-count row that
+    # must never be presented as one of the year's top names.
+    names = queries.get_top_names("F", 2015, 10)
+    assert names
+    assert all(n["total_count"] > 0 for n in names)
+    assert "Debra" not in [n["name"] for n in names]
+
+
+def test_latest_data_year_is_the_newest_year_with_a_recorded_count():
+    assert queries.get_latest_data_year() == 2024

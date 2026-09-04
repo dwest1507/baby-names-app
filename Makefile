@@ -1,4 +1,6 @@
-.PHONY: help install dev dev-frontend dev-backend sample-db test lint format clean stop \
+.PHONY: help install dev dev-frontend dev-backend sample-db build-db precompute-forecasts \
+	verify-db publish-db test lint \
+	format clean stop \
 	frontend-quality frontend-test frontend-build backend-lint backend-test frontend-deps \
 	security-audit lighthouse ci-cd
 
@@ -8,6 +10,13 @@ help:
 	@echo "  make dev                     - Run both frontend and backend locally"
 	@echo "  make dev-frontend            - Run frontend only (Next.js on :3000)"
 	@echo "  make dev-backend             - Run backend only (FastAPI on :8000)"
+	@echo "  make build-db                - Build the deployable database (observed rows only, indexed)"
+	@echo "  make precompute-forecasts    - Precompute forecasts into the built database"
+	@echo "                                 (all cores; PRECOMPUTE_ARGS=--resume to continue a run)"
+	@echo "  make verify-db [DB=path]     - Verify a built database artifact is complete before deploying"
+	@echo "                                 (defaults to data/names.built.db)"
+	@echo "  make publish-db REPO=org/ds  - Publish data/names.built.db to a Hugging Face dataset repo"
+	@echo "                                 (requires HF_TOKEN; see backend/scripts/publish_db.py)"
 	@echo "  make sample-db               - Build a small sample database for development"
 	@echo "  make test                    - Run frontend and backend tests"
 	@echo "  make lint                    - Run frontend and backend linters"
@@ -56,6 +65,25 @@ dev-backend:
 dev: frontend-deps
 	@echo "Starting full stack... (Press Ctrl+C to stop)"
 	@$(MAKE) -j2 dev-frontend dev-backend
+
+build-db:
+	@echo "Building the deployable database from data/names.db ..."
+	cd backend && uv run python scripts/build_db.py
+	@echo "Built data/names.built.db — observed rows only, indexed."
+
+precompute-forecasts:
+	@echo "Precomputing forecasts into data/names.built.db across all cores."
+	@echo "Expect tens of minutes on the real database. Safe to interrupt: re-run with"
+	@echo "PRECOMPUTE_ARGS=--resume to fit only the names still outstanding."
+	cd backend && uv run python scripts/precompute_forecasts.py $(PRECOMPUTE_ARGS)
+	@echo "Forecasts stored in the forecasts table of data/names.built.db."
+
+verify-db:
+	cd backend && uv run python scripts/verify_db.py $(DB)
+
+publish-db:
+	@echo "Publishing data/names.built.db to the Hugging Face dataset repo (requires HF_TOKEN)..."
+	cd backend && uv run python scripts/publish_db.py $(REPO)
 
 sample-db:
 	@echo "Building sample database at backend/data/sample_names.db ..."

@@ -1,9 +1,8 @@
-"""Name data endpoints: top names, per-name history, and ARIMA forecasts."""
+"""Name data endpoints: top names, per-name history, and precomputed forecasts."""
 
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.concurrency import run_in_threadpool
 
 from .. import database
 from ..services import forecast, queries
@@ -45,8 +44,11 @@ async def name_history(name: str, sex: Literal["M", "F"] = Query(...)) -> dict:
 @router.get("/names/{name}/forecast")
 async def name_forecast(name: str, sex: Literal["M", "F"] = Query(...)) -> dict:
     _require_database()
-    # ARIMA fitting is CPU-bound; keep the event loop free
-    payload = await run_in_threadpool(forecast.forecast_name, name.lower(), sex)
-    if payload is None:
+    # Forecasts are precomputed (scripts/precompute_forecasts.py); this is a
+    # lookup, not a fit. See docs/adr/0004-forecasts-as-a-build-artifact.md.
+    history = queries.get_name_history(name, sex)
+    if not history:
         raise HTTPException(status_code=404, detail=f"No data found for '{name}' ({sex})")
-    return payload
+    stored = queries.get_forecast(name, sex)
+    calibration = queries.get_calibration() if stored else None
+    return forecast.build_response(sex, history, stored, calibration)

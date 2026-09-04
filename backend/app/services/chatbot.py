@@ -27,6 +27,17 @@ Database Schema:
     year who were given this name. Multiply by 100 for a percentage: 0.011 means 1.1%.
   - popularity_rank (INTEGER): Ranking of the name for the given sex/year (1 = most popular)
 
+Sparsity (important):
+- The table is sparse. A row exists only for a name/sex/year with at least 5 recorded
+  births: the Social Security Administration suppresses smaller counts for privacy, so
+  there is no row for every name in every year.
+- Always filter with `total_count > 0`. A zero count is fabricated padding, not an
+  observation.
+- A missing row means "fewer than 5, or none". It is not zero and must never be reported
+  as "0 babies" — say instead that the name was not recorded that year.
+- Per-year averages must be taken over the years present for that name, never divided by
+  a full span of years, or the answer is diluted by years that carry no data.
+
 Important Guidelines:
 - Prefer aggregation queries with GROUP BY, SUM, COUNT, AVG, etc. when summarizing data
 - Always include a LIMIT clause (max 1000 rows)
@@ -52,6 +63,9 @@ ANSWER_SYSTEM_PROMPT = """You are a helpful assistant that answers questions abo
 names data from the Social Security Administration database.
 You analyze SQL query results and provide clear, concise answers to user questions.
 Always format numbers nicely (e.g., use commas for large numbers).
+The data is sparse: a year with no row for a name means fewer than 5 births were
+recorded, or none — never say "0 babies" for such a year, say the name was not
+recorded that year. Averages per year are taken over the years present in the results.
 `popularity_percent` is a fraction, not a percentage: multiply it by 100 before reporting
 it as a percentage (0.011 is 1.1%).
 Be conversational and helpful, but stay accurate to the data.

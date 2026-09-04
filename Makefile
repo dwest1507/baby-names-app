@@ -11,7 +11,8 @@ help:
 	@echo "  make dev-frontend            - Run frontend only (Next.js on :3000)"
 	@echo "  make dev-backend             - Run backend only (FastAPI on :8000)"
 	@echo "  make build-db                - Build the deployable database (observed rows only, indexed)"
-	@echo "  make precompute-forecasts    - Precompute forecasts into the built database (slow on the real db)"
+	@echo "  make precompute-forecasts    - Precompute forecasts into the built database"
+	@echo "                                 (all cores; PRECOMPUTE_ARGS=--resume to continue a run)"
 	@echo "  make verify-db [DB=path]     - Verify a built database artifact is complete before deploying"
 	@echo "                                 (defaults to data/names.built.db)"
 	@echo "  make publish-db REPO=org/ds  - Publish data/names.built.db to a Hugging Face dataset repo"
@@ -71,9 +72,10 @@ build-db:
 	@echo "Built data/names.built.db — observed rows only, indexed."
 
 precompute-forecasts:
-	@echo "Precomputing forecasts into data/names.built.db (this greedily grid-searches ARIMA"
-	@echo "for every eligible name; on the real database this is expected to take a long time)..."
-	cd backend && uv run python scripts/precompute_forecasts.py
+	@echo "Precomputing forecasts into data/names.built.db across all cores."
+	@echo "Expect tens of minutes on the real database. Safe to interrupt: re-run with"
+	@echo "PRECOMPUTE_ARGS=--resume to fit only the names still outstanding."
+	cd backend && uv run python scripts/precompute_forecasts.py $(PRECOMPUTE_ARGS)
 	@echo "Forecasts stored in the forecasts table of data/names.built.db."
 
 verify-db:

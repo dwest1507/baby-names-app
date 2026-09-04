@@ -46,11 +46,26 @@ def create_indexes(conn) -> None:
 # series stripped out: history is composed at request time from `names`
 # instead, so this table never re-adds the size pruning just removed. See
 # docs/adr/0004-forecasts-as-a-build-artifact.md.
+# `coverage_hits`/`coverage_n` are this name's own contribution to the
+# `calibration` aggregate: how many of its holdout points fell inside the
+# interval the training-only fit would have published, per nominal level, as a
+# JSON object keyed by level. They live here rather than in `payload` because
+# `payload` is served to the API verbatim and coverage is a population
+# statistic, not a per-name one.
+#
+# Storing them at all is what lets `calibration` be computed as a SUM over this
+# table instead of from an accumulator local to one batch invocation. Without
+# that, a resumed batch would calibrate on only the names it happened to refit
+# — a non-random slice, since rows are written in name order — and publish a
+# coverage figure that no longer describes the data. See
+# docs/adr/0007-precompute-batch-runs-in-parallel.md.
 CREATE_FORECASTS_TABLE = """
 CREATE TABLE IF NOT EXISTS forecasts (
     name TEXT NOT NULL,
     sex TEXT NOT NULL,
     payload TEXT NOT NULL,
+    coverage_hits TEXT,
+    coverage_n TEXT,
     PRIMARY KEY (name, sex)
 )
 """

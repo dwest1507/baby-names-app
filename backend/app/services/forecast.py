@@ -33,9 +33,9 @@ logger = logging.getLogger(__name__)
 FORECAST_YEARS = 5
 VALIDATION_YEARS = 5
 MIN_HISTORY_YEARS = 10
-MAX_P = 3
+MAX_P = 2
 MAX_D = 2
-MAX_Q = 3
+MAX_Q = 2
 
 
 def _preprocess(series: np.ndarray) -> tuple[np.ndarray, bool]:
@@ -79,9 +79,14 @@ def _find_optimal_differencing(series: np.ndarray, max_d: int = MAX_D) -> int:
 
 
 def _fit_best_model(series: np.ndarray):
-    """Grid search over (p, d, q) around the optimal differencing, selected by AICc."""
-    optimal_d = _find_optimal_differencing(series)
-    d_range = range(max(0, optimal_d - 1), min(MAX_D, optimal_d + 1) + 1)
+    """Grid search over (p, q) at the tested differencing order, selected by AICc."""
+    # Only the differencing order the ADF/KPSS tests actually chose. The grid
+    # used to sweep optimal_d +/- 1 and pick the winner by AICc, but AICc is
+    # not comparable across different `d`: differencing changes the data the
+    # likelihood is computed on, so those three sets of models were never on a
+    # common scale. Searching the one tested value is both correct and three
+    # times cheaper. See docs/adr/0007-precompute-batch-runs-in-parallel.md.
+    d_range = (_find_optimal_differencing(series),)
 
     best_aicc = float("inf")
     best_params = None

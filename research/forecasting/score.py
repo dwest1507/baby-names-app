@@ -30,6 +30,11 @@ def main():
     ap.add_argument("--buckets", default="top100,top1000,top5000,rest,ALL")
     ap.add_argument("--by-horizon", action="store_true")
     ap.add_argument("--by-origin", action="store_true")
+    ap.add_argument(
+        "--common",
+        action="store_true",
+        help="restrict to name-origins every method covers, for a like-for-like table",
+    )
     a = ap.parse_args()
     rows = load(a.path)
 
@@ -37,6 +42,12 @@ def main():
     for r in rows:
         idx[(r["key"], r["origin"])][r["method"]] = r
     methods = sorted({r["method"] for r in rows})
+    if a.common:
+        before = len(idx)
+        idx = {k: d for k, d in idx.items() if len(d) == len(methods)}
+        print(
+            f"common subset: {len(idx)} of {before} name-origins carry all {len(methods)} methods"
+        )
     origins = sorted({r["origin"] for r in rows})
 
     def report(sel_rows, title):
@@ -49,17 +60,22 @@ def main():
                 continue
             for m, r in d.items():
                 by[m].append((r, base))
-        print(f"\n=== {title}  (n={len(by.get('naive', []))} name-origins) ===")
+        counts = {len(v) for v in by.values()}
+        spread = "" if len(counts) == 1 else f", methods cover {min(counts)}-{max(counts)}"
+        print(f"\n=== {title}  (n={len(by.get('naive', []))} name-origins{spread}) ===")
         print(
             f"{'method':20} {'poolSkill':>9} {'medSkill':>9} {'%>naive':>8} "
             f"{'medMAPE%':>9} {'medLogAE':>9} {'p90APE%':>8} {'secs':>7}"
         )
-        base_pool = sum(r[1]["ae"].sum() for r in by["naive"])
         out = []
         for m in methods:
             rs = by[m]
             if not rs:
                 continue
+            # The baseline is summed over exactly the name-origins this method
+            # covers. Using every naive row instead silently flatters any
+            # method that ran on a subset of them.
+            base_pool = sum(b["ae"].sum() for _, b in rs)
             pool = 1 - sum(r["ae"].sum() for r, _ in rs) / base_pool
             per = [
                 1 - r["ae"].mean() / b["ae"].mean() if b["ae"].mean() > 0 else 0.0 for r, b in rs

@@ -38,10 +38,14 @@ $PY conformal.py  .work/all.jsonl --method combo_pooled_ens --cal-origins 2014 -
 | file | role |
 |---|---|
 | `data.py` | paths, the popularity tiers every table breaks down on, and the stratified sample |
+| `cohorts.py` | per-year share held by each ending / initial-letter / sex cohort, leave-one-out |
 | `extract_series.py` | pulls each name/sex's observed `(year, popularity_percent)` series out of the DB |
 | `methods.py` | the candidate forecasters, including `current` — the shipped ARIMA pipeline |
 | `backtest.py` | rolling-origin evaluation; fits each base method once per name-origin and derives the shrunk/ensemble variants from those forecasts |
 | `pooled.py` | the global model: one ridge per horizon, learned across all names, in log space |
+| `pooled2.py` | the same, with level interactions, cohort features, popularity-weighted fitting and a tuned penalty |
+| `cap.py` | caps a forecast's implied growth at what names actually do, and writes the capped variants |
+| `weights.py` | learns ensemble weights per tier and horizon on earlier origins, applies them to the held-out one |
 | `combine.py` | log-space combinations of forecasts already produced by the runs above |
 | `score.py` | skill against the naive baseline, by popularity tier and by horizon |
 | `selection.py` | picks each name's method on an earlier origin and scores that choice — plus the hindsight oracle |
@@ -56,4 +60,17 @@ $PY conformal.py  .work/all.jsonl --method combo_pooled_ens --cal-origins 2014 -
   a method can win on poolSkill while losing on most names.
 * A method that looks good on one and bad on the other has a fat tail somewhere. Read all three.
 
-The findings from the run of 2026-09-05 are in [FINDINGS.md](FINDINGS.md).
+The findings are in [FINDINGS.md](FINDINGS.md) (round 1) and [FINDINGS-2.md](FINDINGS-2.md)
+(round 2 — the untested hypotheses from round 1, plus a correction to one of its
+recommendations). Round 2's pipeline:
+
+```bash
+$PY cohorts.py                                       # cohort aggregates for the ablation
+$PY backtest.py --top 100000 --mid 1200 --rest 1200 --origins 2009,2014,2019 --timeout 120
+$PY pooled2.py --sets inter --weight pop --power 0.5 --lam 100 \
+               --top 100000 --mid 1200 --rest 1200 --eval-origins 2009,2014,2019 \
+               --name pooled2_pop --out .work/pooled2_pop.jsonl
+$PY cap.py .work/main.jsonl .work/pooled2_pop.jsonl --fit-origins 2009,2014
+$PY weights.py .work/main.jsonl .work/pooled2_pop.jsonl .work/capped.jsonl \
+               --fit-origins 2009,2014 --test-origin 2019
+```

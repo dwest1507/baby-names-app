@@ -1,5 +1,9 @@
 # Improving the popularity forecast
 
+> **Round 2 followed this up** — see [FINDINGS-2.md](FINDINGS-2.md). It supersedes recommendation
+> 1 below: the `log1p` → `log` fix is unsafe without a cap on implied growth, and a
+> popularity-weighted pooled model with level interactions beats everything measured here.
+
 Research run: 2026-09-05, against `data/names.built.db` (2,149,477 observed rows, 1880–2024,
 21,792 name/sex series in current use). Every number below was measured; none is quoted from
 literature. Reproduce with the harness in [README.md](README.md).
@@ -209,7 +213,9 @@ truthfully again, instead of "51% interval".
 
 ## 6. What I would do, in order
 
-1. **Fix the two bugs** (`log1p` → `log` on a positive series; cap `d` at 1). Small diffs inside
+1. **Fix the two bugs** (`log1p` → `log` on a positive series; cap `d` at 1) — but see
+   [FINDINGS-2.md §0](FINDINGS-2.md): the log change needs a cap on implied growth shipped with
+   it, or it produces five-year ratios up to 2.5e44 on a handful of names. Small diffs inside
    `forecast.py`, no new dependencies, no schema change. Removes the 8.5% of forecasts that end
    at exactly zero and roughly doubles five-year skill on popular names.
 2. **Shrink the point forecast toward the last observed value** (`w≈0.7` in log space). Three

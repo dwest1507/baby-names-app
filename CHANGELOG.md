@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/dwest1507/baby-names-app/compare/baby-names-app-v1.0.0...baby-names-app-v1.0.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* **frontend:** proceed with build on initial Vercel deploy when previous SHA is unset ([e280063](https://github.com/dwest1507/baby-names-app/commit/e280063cef36a0b614793536d157ee4182a681c6))
+
 ## [1.0.0](https://github.com/dwest1507/baby-names-app/compare/baby-names-app-v0.1.0...baby-names-app-v1.0.0) (2026-09-04)
 
 

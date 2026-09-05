@@ -24,6 +24,21 @@ updates:
           - patch
     open-pull-requests-limit: 5
 
+  # Notebook pipeline deps (data_pipeline.ipynb, model_exploration.ipynb).
+  # Separate from the web app's backend/pyproject.toml — pinned, so unscanned
+  # until listed here explicitly.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      notebooks-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    open-pull-requests-limit: 5
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

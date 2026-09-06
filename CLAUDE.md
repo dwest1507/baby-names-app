@@ -48,9 +48,14 @@ Browser → Next.js (:3000) → /api/[...path]/route.ts (proxy) → FastAPI (:80
   Hugging Face Hub at first access. All connections are opened read-only (`mode=ro`).
 - `backend/app/services/chatbot.py` implements the chat feature as two Groq calls: one
   translates the question + recent history into SQL, one phrases query results as an answer.
-  Generated SQL is validated in `validate_sql_query` (SELECT-only, keyword blocklist, forced
-  `LIMIT 1000`) before execution in `execute_safe_sql`. Any change to the SQL guardrails or the
-  schema description (`SCHEMA_CONTEXT`) should keep the prompt and the validator in sync.
+  Generated SQL is validated in `validate_sql_query` (reads only — `SELECT` or a `WITH`
+  CTE — keyword blocklist, and a `LIMIT 1000` applied by wrapping the query rather than by
+  editing its text) before execution in `execute_safe_sql`. It runs on the budgeted
+  connection from `database.connect_for_generated_sql`: read-only, five-second deadline,
+  1 MB value cap. The budget, not the row cap, is what bounds a cartesian join or a
+  recursive CTE — see `docs/adr/0008-a-resource-budget-for-generated-sql.md`. Any change to
+  the SQL guardrails or the schema description (`SCHEMA_CONTEXT`) should keep the prompt and
+  the validator in sync; a test asserts they agree.
 - `backend/app/services/forecast.py` produces the ARIMA forecasts (confidence intervals,
   holdout validation, residual diagnostics) shown on `/search`.
 - Frontend pages under `frontend/app/` (`/`, `/explore`, `/search`, `/chat`) call the backend

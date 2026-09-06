@@ -53,6 +53,21 @@ and 101–1000 without going negative in the tail — is now met in full.**
 The ridge is the arm that goes negative: −0.024 pooled in the tail, worse than assuming no change
 at all, on 20 of 25 origins. The boosted model is positive in every tier.
 
+The same ordering holds on the per-name metric, which weights every name once instead of by
+births — including ranks 1001–5000, where the 2019-only test had the ridge marginally ahead
+(0.064 vs 0.062):
+
+| tier | gbt medSkill | ridge medSkill | difference | gbt %>naive | ridge %>naive |
+|---|---|---|---|---|---|
+| ranks 1–100 | **0.351** | 0.246 | +0.104 | 75.5% | 75.8% |
+| ranks 101–1000 | **0.187** | 0.177 | +0.010 | 67.5% | 69.9% |
+| 1001–5000 | **0.089** | 0.070 | +0.018 | 60.9% | 58.3% |
+| >5000 | **0.045** | 0.008 | +0.036 | 55.9% | 50.9% |
+
+The `%>naive` column is the one place the ridge still holds an edge, in the two top tiers: it
+beats a flat line on marginally more names, while losing by more when it loses. That is the same
+shape round 3 saw at a single origin, and it is the honest counterweight to the tables above.
+
 Because 25 origins with five-year horizons overlap heavily, here is the same comparison on the
 five origins whose test windows do not overlap at all (1995, 2000, 2005, 2010, 2015):
 

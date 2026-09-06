@@ -54,6 +54,9 @@ $PY conformal.py  .work/all.jsonl --method combo_pooled_ens --cal-origins 2014 -
 | `conformal.py` | empirical prediction intervals: calibrate residual quantiles on an earlier origin, measure the coverage they actually achieve |
 | `paired.py` | bootstraps the poolSkill difference between two methods, so a gap can be read against its own noise |
 | `origins.py` | poolSkill as a method x origin matrix, to check whether a conclusion holds across test windows |
+| `quantiles.py` | fits the prediction quantiles themselves with pinball loss, one booster per (alpha, horizon) |
+| `intervals.py` | scores band constructions against each other — residual, direct-quantile and conformalised — on interval score, not coverage alone |
+| `reconcile.py` | makes the per-name forecasts add up to the share total they have to sum to, and scores what that costs or buys |
 
 ## Reading the metrics
 
@@ -67,8 +70,10 @@ $PY conformal.py  .work/all.jsonl --method combo_pooled_ens --cal-origins 2014 -
 The findings are in [FINDINGS.md](FINDINGS.md) (round 1), [FINDINGS-2.md](FINDINGS-2.md)
 (round 2 — the untested hypotheses from round 1, plus a correction to one of its
 recommendations) [FINDINGS-3.md](FINDINGS-3.md) (round 3 — boosted trees in place of the
-pooled ridge) and [FINDINGS-4.md](FINDINGS-4.md) (round 4 — the same comparison over 25 origins
-instead of one). Round 2's pipeline:
+pooled ridge), [FINDINGS-4.md](FINDINGS-4.md) (round 4 — the same comparison over 25 origins
+instead of one) and [FINDINGS-5.md](FINDINGS-5.md) (round 5 — fitting the prediction quantiles
+directly, and making the forecasts add up: both work, neither for the reason expected).
+Round 2's pipeline:
 
 ```bash
 $PY cohorts.py                                       # cohort aggregates for the ablation
@@ -129,3 +134,36 @@ $PY paired.py  .work/many.jsonl --a gbt_pop --b pooled2_pop   # resamples names,
 
 `paired.py` and `origins.py` need a `naive` arm only if you ask for one — `origins.py` recomputes
 the baseline from each row's `last`, while `paired.py` expects `naive` rows in the file.
+
+Round 5 has two independent halves. The first fits the prediction quantiles instead of pasting
+residual quantiles around a point forecast. Seven origins: three to calibrate a band on, four to
+score it at, and the calibration block's five-year targets all close before the first test origin
+opens, so nothing in the test informs the calibration.
+
+```bash
+$PY quantiles.py --alphas 0.025,0.1,0.5,0.9,0.975 \
+                 --leaves 15 --lr 0.03 --trees 300 --min-child 200 \
+                 --top 100000 --mid 1200 --rest 1200 \
+                 --eval-origins 1995,1999,2003,2008,2012,2016,2019 \
+                 --name qr --out .work/qr.jsonl
+
+$PY intervals.py .work/qr.jsonl --cal-origins 1995,1999,2003 \
+                 --test-origins 2008,2012,2016,2019 --conditional --by-horizon
+```
+
+The quantile objective is roughly ten times slower per booster than squared error, because
+LightGBM recomputes every leaf value as a weighted percentile — budget hours, not minutes, and
+run it alone on the machine.
+
+The second half needs forecasts for the *whole* eligible set, not the stratified sample, because
+the constraint being imposed is a sum over every name:
+
+```bash
+$PY pooled3.py --model gbt --sets "" --leaves 15 --lr 0.03 --trees 300 --min-child 200 \
+               --top 100000 --mid 100000 --rest 100000 --eval-origins 1995:2019 \
+               --name gbt_pop --out .work/gbt_full.jsonl
+
+$PY reconcile.py .work/gbt_full.jsonl --out .work/recon.jsonl   # drift table + 3x3 arms
+$PY reconcile.py .work/gbt_full.jsonl --set top1000             # constraint inside the top 1000
+$PY origins.py   .work/recon.jsonl                              # does it hold by origin?
+```

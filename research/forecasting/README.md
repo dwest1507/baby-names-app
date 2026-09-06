@@ -44,12 +44,15 @@ $PY conformal.py  .work/all.jsonl --method combo_pooled_ens --cal-origins 2014 -
 | `backtest.py` | rolling-origin evaluation; fits each base method once per name-origin and derives the shrunk/ensemble variants from those forecasts |
 | `pooled.py` | the global model: one ridge per horizon, learned across all names, in log space |
 | `pooled2.py` | the same, with level interactions, cohort features, popularity-weighted fitting and a tuned penalty |
+| `pooled3.py` | the same problem fitted with gradient-boosted trees (LightGBM) instead of a ridge, plus the lifecycle feature block |
 | `cap.py` | caps a forecast's implied growth at what names actually do, and writes the capped variants |
 | `weights.py` | learns ensemble weights per tier and horizon on earlier origins, applies them to the held-out one |
 | `combine.py` | log-space combinations of forecasts already produced by the runs above |
+| `blend.py` | log-space blend of two named methods, with the weight fitted on earlier origins |
 | `score.py` | skill against the naive baseline, by popularity tier and by horizon |
 | `selection.py` | picks each name's method on an earlier origin and scores that choice — plus the hindsight oracle |
 | `conformal.py` | empirical prediction intervals: calibrate residual quantiles on an earlier origin, measure the coverage they actually achieve |
+| `paired.py` | bootstraps the poolSkill difference between two methods, so a gap can be read against its own noise |
 
 ## Reading the metrics
 
@@ -60,9 +63,10 @@ $PY conformal.py  .work/all.jsonl --method combo_pooled_ens --cal-origins 2014 -
   a method can win on poolSkill while losing on most names.
 * A method that looks good on one and bad on the other has a fat tail somewhere. Read all three.
 
-The findings are in [FINDINGS.md](FINDINGS.md) (round 1) and [FINDINGS-2.md](FINDINGS-2.md)
+The findings are in [FINDINGS.md](FINDINGS.md) (round 1), [FINDINGS-2.md](FINDINGS-2.md)
 (round 2 — the untested hypotheses from round 1, plus a correction to one of its
-recommendations). Round 2's pipeline:
+recommendations) and [FINDINGS-3.md](FINDINGS-3.md) (round 3 — boosted trees in place of the
+pooled ridge). Round 2's pipeline:
 
 ```bash
 $PY cohorts.py                                       # cohort aggregates for the ablation
@@ -73,4 +77,30 @@ $PY pooled2.py --sets inter --weight pop --power 0.5 --lam 100 \
 $PY cap.py .work/main.jsonl .work/pooled2_pop.jsonl --fit-origins 2009,2014
 $PY weights.py .work/main.jsonl .work/pooled2_pop.jsonl .work/capped.jsonl \
                --fit-origins 2009,2014 --test-origin 2019
+```
+
+Round 3 needs LightGBM, which is not a backend dependency — install it into the same virtualenv
+first (`cd backend && uv pip install lightgbm`). Its pipeline:
+
+```bash
+# hyperparameters chosen on 2009+2014, scored once on 2019
+$PY pooled3.py --model gbt --sets inter --tune --tune-origins 2009,2014 \
+               --eval-origins 2019 --name gbt_inter --out .work/gbt_inter.jsonl
+
+# the shipped candidate: base features only, 5 seeds, all three origins
+$PY pooled3.py --model gbt --sets "" --leaves 15 --lr 0.03 --trees 300 --min-child 200 \
+               --seeds 5 --eval-origins 2009,2014,2019 --name gbt_pop --out .work/gbt_pop.jsonl
+
+# ablations: drop the hand-built interactions, add the lifecycle block, and the same
+# feature sets under the ridge, to separate "nonlinearity" from "new features"
+$PY pooled3.py --model gbt   --sets ""         ... --name gbt_base
+$PY pooled3.py --model gbt   --sets life       ... --name gbt_base_life --importance
+$PY pooled3.py --model ridge --sets inter,life --lam 100 ... --name ridge_life
+
+$PY blend.py .work/gbt_pop.jsonl .work/pooled2_pop.jsonl --pair gbt_pop,pooled2_pop \
+             --fit-origins 2009,2014 --out .work/blend.jsonl
+$PY cap.py .work/gbt_pop.jsonl .work/blend.jsonl --fit-origins 2009,2014 \
+           --out .work/capped_gbt.jsonl
+$PY paired.py .work/cmp.jsonl --a gbt_pop_cap --b pooled2_pop_cap
+$PY conformal.py .work/gbt_pop.jsonl --method gbt_pop --cal-origins 2009,2014 --test-origin 2019
 ```

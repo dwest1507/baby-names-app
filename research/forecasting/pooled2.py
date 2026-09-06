@@ -111,8 +111,13 @@ def feat_names(sets):
     return names
 
 
-def rows_for(series, origins, sets, coh, min_train=10):
-    names = feat_names(sets)
+def rows_for(series, origins, sets, coh, min_train=10, extra=None):
+    """`extra`, if given, appends features to every row (see `pooled3.Lifecycle`).
+
+    It must expose `.names` and be callable as `extra(key, years, vals, ltr)`
+    on the training slice; the base feature block is unchanged either way.
+    """
+    names = feat_names(sets) + (list(extra.names) if extra is not None else [])
     out = []
     for key, years, vals, rank in series:
         tr_all = years <= max(origins)
@@ -129,6 +134,8 @@ def rows_for(series, origins, sets, coh, min_train=10):
                 own[idx[keep]] = vals[tr_all][keep]
                 cohort_hist = [np.maximum(c - own, 0.0) for c in coh.series(key, o)]
             f = features(ltr, cohort_hist, sets)
+            if extra is not None:
+                f |= extra(key, years[tr], vals[tr], ltr)
             fut = {int(y): v for y, v in zip(years, vals, strict=True) if o < y <= o + H}
             tgt = np.full(H, np.nan)
             for i in range(1, H + 1):
@@ -170,27 +177,32 @@ def predict(model, X):
 _TRAIN_CACHE = {}
 
 
-def train_rows(series, origin, sets, coh):
+def train_rows(series, origin, sets, coh, extra=None):
     """Training rows for one origin, built once and reused across penalties."""
-    key = (id(series), origin, tuple(sorted(sets)))
+    key = (id(series), origin, tuple(sorted(sets)), getattr(extra, "tag", None))
     if key not in _TRAIN_CACHE:
-        _TRAIN_CACHE[key] = rows_for(series, list(range(1930, origin - H + 1)), sets, coh)
+        _TRAIN_CACHE[key] = rows_for(
+            series, list(range(1930, origin - H + 1)), sets, coh, extra=extra
+        )
     return _TRAIN_CACHE[key]
 
 
-def train(series, origin, sets, coh, lam, weight, power=1.0, clip=50.0):
-    tr = train_rows(series, origin, sets, coh)
+def pop_weights(rows, power=1.0, clip=50.0):
+    """Popularity weights: the fit should care most about names people look up.
+
+    exp(level) is the name's share of births; the exponent sets how hard the
+    loss leans on the popular ones and the clip stops the handful of giants
+    from becoming the whole fit.
+    """
+    w = np.exp(np.array([r["level"] for r in rows])) ** power
+    return np.clip(w / w.mean(), 0.0, clip)
+
+
+def train(series, origin, sets, coh, lam, weight, power=1.0, clip=50.0, extra=None):
+    tr = train_rows(series, origin, sets, coh, extra)
     X = np.vstack([r["x"] for r in tr])
     Y = np.vstack([r["y"] for r in tr])
-    w = None
-    if weight == "pop":
-        # Popularity-weighted: the fit should care most about names people
-        # actually look up. exp(level) is the name's share of births; the
-        # exponent sets how hard the loss leans on the popular ones and the
-        # clip stops the handful of giants from becoming the whole fit.
-        w_all = np.exp(np.array([r["level"] for r in tr])) ** power
-        w_all = w_all / w_all.mean()
-        w = np.clip(w_all, 0.0, clip)
+    w = pop_weights(tr, power, clip) if weight == "pop" else None
     models = []
     for i in range(H):
         ok = ~np.isnan(Y[:, i])

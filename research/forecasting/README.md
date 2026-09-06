@@ -53,6 +53,7 @@ $PY conformal.py  .work/all.jsonl --method combo_pooled_ens --cal-origins 2014 -
 | `selection.py` | picks each name's method on an earlier origin and scores that choice — plus the hindsight oracle |
 | `conformal.py` | empirical prediction intervals: calibrate residual quantiles on an earlier origin, measure the coverage they actually achieve |
 | `paired.py` | bootstraps the poolSkill difference between two methods, so a gap can be read against its own noise |
+| `origins.py` | poolSkill as a method x origin matrix, to check whether a conclusion holds across test windows |
 
 ## Reading the metrics
 
@@ -65,8 +66,9 @@ $PY conformal.py  .work/all.jsonl --method combo_pooled_ens --cal-origins 2014 -
 
 The findings are in [FINDINGS.md](FINDINGS.md) (round 1), [FINDINGS-2.md](FINDINGS-2.md)
 (round 2 — the untested hypotheses from round 1, plus a correction to one of its
-recommendations) and [FINDINGS-3.md](FINDINGS-3.md) (round 3 — boosted trees in place of the
-pooled ridge). Round 2's pipeline:
+recommendations) [FINDINGS-3.md](FINDINGS-3.md) (round 3 — boosted trees in place of the
+pooled ridge) and [FINDINGS-4.md](FINDINGS-4.md) (round 4 — the same comparison over 25 origins
+instead of one). Round 2's pipeline:
 
 ```bash
 $PY cohorts.py                                       # cohort aggregates for the ablation
@@ -104,3 +106,26 @@ $PY cap.py .work/gbt_pop.jsonl .work/blend.jsonl --fit-origins 2009,2014 \
 $PY paired.py .work/cmp.jsonl --a gbt_pop_cap --b pooled2_pop_cap
 $PY conformal.py .work/gbt_pop.jsonl --method gbt_pop --cal-origins 2009,2014 --test-origin 2019
 ```
+
+Round 4 widens round 3's single held-out origin to 25. `--eval-origins` takes ranges
+(`1995:2019`, or `1995:2019:5` with a step), and training rows are evicted between origins, so
+peak memory stays at one origin's worth (~0.5 GB) rather than 25.
+
+```bash
+# A and B: 25 origins, hyperparameters held fixed and symmetric between the two models
+$PY pooled3.py --model gbt   --sets ""      --leaves 15 --lr 0.03 --trees 300 --min-child 200 \
+               --eval-origins 1995:2019 --name gbt_pop     --out .work/gbt_many.jsonl
+$PY pooled3.py --model ridge --sets inter --lam 100 \
+               --eval-origins 1995:2019 --name pooled2_pop --out .work/ridge_many.jsonl
+
+# C: the leakage-free block — tune only on origins whose targets closed before the test starts
+$PY pooled3.py --model gbt --sets "" --tune \
+               --grid "leaves=7,15,31;lr=0.02,0.03,0.05;trees=150,300,600;min_child=200,1000" \
+               --tune-origins 1995,2000,2005,2010 --eval-origins 2015:2019 --name gbt_clean
+
+$PY origins.py .work/gbt_many.jsonl .work/ridge_many.jsonl --common
+$PY paired.py  .work/many.jsonl --a gbt_pop --b pooled2_pop   # resamples names, not name-origins
+```
+
+`paired.py` and `origins.py` need a `naive` arm only if you ask for one — `origins.py` recomputes
+the baseline from each row's `last`, while `paired.py` expects `naive` rows in the file.

@@ -28,6 +28,12 @@ def main():
     ap.add_argument("--b", required=True)
     ap.add_argument("--buckets", default="top100,top1000,top5000,rest")
     ap.add_argument("--origin", type=int, default=None)
+    ap.add_argument(
+        "--resample",
+        default="name",
+        choices=["name", "row"],
+        help="bootstrap unit: a name (all its origins together) or one name-origin",
+    )
     ap.add_argument("--draws", type=int, default=5000)
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
@@ -44,19 +50,28 @@ def main():
         f"{'skill ' + a.b:>22} {'diff [2.5%, 97.5%]':>28}"
     )
     for b in a.buckets.split(","):
-        ea, eb, en = [], [], []
-        for (_, origin), d in by.items():
+        # Resampling name-origins independently would treat one name's ten
+        # overlapping five-year windows as ten independent draws, which they
+        # are not. Summing each name's errors first and resampling *names*
+        # leaves the point estimate identical and the interval honest.
+        units = defaultdict(lambda: np.zeros(3))
+        rows = 0
+        for (name, origin), d in by.items():
             if len(d) < 3 or (a.origin is not None and origin != a.origin):
                 continue
             if bucket(d["naive"]["rank"]) != b:
                 continue
             act = np.array(d["naive"]["actual"], dtype=float)
-            ea.append(np.abs(np.array(d[a.a]["pred"]) - act).sum())
-            eb.append(np.abs(np.array(d[a.b]["pred"]) - act).sum())
-            en.append(np.abs(d["naive"]["last"] - act).sum())
-        if not ea:
+            unit = name if a.resample == "name" else (name, origin)
+            units[unit] += (
+                np.abs(np.array(d[a.a]["pred"]) - act).sum(),
+                np.abs(np.array(d[a.b]["pred"]) - act).sum(),
+                np.abs(d["naive"]["last"] - act).sum(),
+            )
+            rows += 1
+        if not units:
             continue
-        ea, eb, en = np.array(ea), np.array(eb), np.array(en)
+        ea, eb, en = np.array(list(units.values())).T
         idx = rng.integers(0, len(ea), size=(a.draws, len(ea)))
         sa = 1 - ea[idx].sum(1) / en[idx].sum(1)
         sb = 1 - eb[idx].sum(1) / en[idx].sum(1)
@@ -65,7 +80,7 @@ def main():
         alo, ahi = np.percentile(sa, [2.5, 97.5])
         blo, bhi = np.percentile(sb, [2.5, 97.5])
         print(
-            f"{b:10} {len(ea):5d} "
+            f"{b:10} {rows:5d} "
             f"{1 - ea.sum() / en.sum():+9.3f} [{alo:+.3f},{ahi:+.3f}] "
             f"{1 - eb.sum() / en.sum():+9.3f} [{blo:+.3f},{bhi:+.3f}] "
             f"{diff.mean():+9.3f} [{lo:+.3f}, {hi:+.3f}]  P(a>b)={100 * (diff > 0).mean():.0f}%"

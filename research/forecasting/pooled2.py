@@ -187,6 +187,17 @@ def train_rows(series, origin, sets, coh, extra=None):
     return _TRAIN_CACHE[key]
 
 
+def evict_train_rows(origin=None):
+    """Drop cached training rows for one origin, or all of them.
+
+    Each origin's rows are ~640k dicts, on the order of a gigabyte. Caching
+    them across a penalty or hyperparameter sweep at one origin is the point;
+    holding twenty-five origins at once is an out-of-memory kill.
+    """
+    for key in [k for k in _TRAIN_CACHE if origin is None or k[1] == origin]:
+        del _TRAIN_CACHE[key]
+
+
 def pop_weights(rows, power=1.0, clip=50.0):
     """Popularity weights: the fit should care most about names people look up.
 

@@ -145,6 +145,18 @@ class Lifecycle:
         }
 
 
+def parse_origins(spec):
+    """`2009,2014`, or `1995:2019`, or `1995:2019:5` — inclusive of both ends."""
+    out = []
+    for part in filter(None, spec.split(",")):
+        if ":" in part:
+            bits = [int(x) for x in part.split(":")]
+            out.extend(range(bits[0], bits[1] + 1, bits[2] if len(bits) > 2 else 1))
+        else:
+            out.append(int(part))
+    return sorted(dict.fromkeys(out))
+
+
 def _lgb_params(hp, objective, seed):
     p = {
         "objective": objective,
@@ -280,7 +292,7 @@ def main():
         hp = tune(
             all_series,
             eval_series,
-            [int(x) for x in a.tune_origins.split(",")],
+            parse_origins(a.tune_origins),
             sets,
             coh,
             hp,
@@ -289,7 +301,9 @@ def main():
         )
 
     out_rows = []
-    for eo in [int(x) for x in a.eval_origins.split(",")]:
+    for eo in parse_origins(a.eval_origins):
+        # One origin's training rows at a time: see pooled2.evict_train_rows.
+        pooled2.evict_train_rows()
         t0 = time.time()
         rows = pooled2.rows_for(eval_series, [eo], sets, coh, extra=extra)
         if a.model == "ridge":

@@ -22,7 +22,8 @@ The methodological finding matters more than any of the three. **A four-origin t
 recency's measured value at +0.0007 when its true value over 25 origins is +0.0025**, because
 the effect grows with the origin and the block sits in the era where it does not exist. Round 4
 established tuning on early origins as the leakage-free discipline; it is the wrong place to
-measure any parameter whose job depends on how much history exists.
+measure any parameter whose effect varies with the origin, and nothing in the harness flags
+which parameters those are.
 
 All three repeat round 5's pattern: the issue has been good at spotting defects and less good at
 diagnosing them. The mid-tier band really is too narrow on the upside, and the fit really does
@@ -149,16 +150,33 @@ top-1000 metric:
 
 The tuning block sits almost entirely in the era where the effect does not exist, so the sweep
 measured a real effect at roughly a sixth of its average size and could not separate it from
-noise. The mechanism is mechanical: at origin 1995 the training pool spans 1930-1990 and a
-40-year half-life barely discriminates inside it; at origin 2019 it spans 1930-2014 and the same
-half-life is genuinely down-weighting the 1930s and 1940s. **A recency parameter has less and
-less to do the further back the origin sits.**
+noise.
+
+The trend itself is solid — three consecutive blocks, monotone, and the boundary between "no
+effect" and "clear effect" falls inside the tuning block's own span. The *reason* for it is a
+hypothesis, and the obvious mechanical one only half works. A 40-year half-life does discriminate
+less at an early origin, but not dramatically less:
+
+| origin | training origins | weight, newest -> 1930 | spread |
+|---|---|---|---|
+| 1995 | 61 | 0.92 -> 0.35 | 2.6x |
+| 2005 | 71 | 0.92 -> 0.30 | 3.1x |
+| 2019 | 85 | 0.92 -> 0.23 | 3.9x |
+
+A 1.5x change in weight spread is not obviously enough to take the gain from +0.0003 to +0.0040.
+The likelier story is about what is being down-weighted rather than how hard: forecasting from
+2019 means the pre-war rows are describing a naming era four decades further removed from the
+test window than they are when forecasting from 1995, and the distribution genuinely changed
+over that span (the female top 1000's share of births falls throughout). That is a claim this
+round did not test. What it did establish is the empirical trend and its consequence for tuning.
 
 That is a trap in this harness's own conventions. Round 4 established tuning on early origins as
-the leakage-free discipline, and it is the right discipline for every knob whose value does not
-depend on how much history exists — but it is exactly the wrong place to measure one that does.
-Anything else with the same property (a window, a decay, a burn-in) needs the same treatment:
-**tune it early for honesty, then confirm it late, and read the by-origin trend, not the mean.**
+the leakage-free discipline, and it is the right discipline for every knob whose effect is
+constant across origins — which is what leaves and learning rates are, and what a recency
+parameter is not. The harness gives no signal about which kind a knob is; the sweep prints one
+mean and hides the trend inside it. **Tune early for honesty, confirm over all 25, and read the
+by-origin trend before believing either number.** Any future window, decay or burn-in has the
+same shape.
 
 ### What this does not say
 

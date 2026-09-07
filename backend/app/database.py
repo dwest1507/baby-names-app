@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 from functools import lru_cache
 
 from . import config
@@ -89,6 +90,39 @@ def connect() -> sqlite3.Connection:
     path = resolve_database_path()
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    return conn
+
+
+# The budget a model-written query gets. Long enough that no honest question
+# about 145 years of names comes close, short enough that a runaway one frees
+# its worker before the next visitor notices. See
+# docs/adr/0008-a-resource-budget-for-generated-sql.md.
+QUERY_BUDGET_SECONDS = 5.0
+
+# The largest single value such a query may materialise. Names and counts are
+# tiny; a megabyte is unreachable by accident and stops `randomblob(1e9)` from
+# allocating a gigabyte inside one row, where no row cap can reach it.
+MAX_VALUE_BYTES = 1_000_000
+
+# How often SQLite pauses to ask whether it should keep going, measured in
+# virtual-machine instructions. Small enough to abort a runaway query promptly,
+# large enough that the check costs nothing on an ordinary one.
+_BUDGET_CHECK_INSTRUCTIONS = 1000
+
+
+def connect_for_generated_sql() -> sqlite3.Connection:
+    """A read-only connection carrying a time and size budget.
+
+    For SQL the model wrote rather than SQL we wrote. Read-only already makes
+    such a query harmless to the data; this makes it harmless to the service,
+    which the row cap alone cannot do — a cartesian join or a recursive CTE
+    does all its damage before the first row is handed back.
+    """
+    conn = connect()
+    deadline = time.monotonic() + QUERY_BUDGET_SECONDS
+    # A truthy return aborts the statement in progress with OperationalError.
+    conn.set_progress_handler(lambda: time.monotonic() > deadline, _BUDGET_CHECK_INSTRUCTIONS)
+    conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_VALUE_BYTES)
     return conn
 
 

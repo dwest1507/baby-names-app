@@ -1,7 +1,13 @@
 """Groq-powered natural-language chatbot over the names database.
 
-Two LLM calls per question: one to translate the question into a guarded
-SELECT query, one to phrase the query results as an answer.
+Two LLM calls per question: one to translate the question into a read-only
+query, one to phrase the query results as an answer.
+
+The generated query is guarded four ways, because none of them is sufficient
+alone: it must read rather than write (``validate_sql_query``), it runs on a
+read-only connection, it is capped to ``MAX_ROWS`` rows, and it runs under the
+time and size budget in ``database.connect_for_generated_sql`` — the only one
+of the four that a cartesian join or a recursive CTE respects.
 """
 
 import re
@@ -12,6 +18,36 @@ from groq import Groq
 from .. import config, database
 
 MAX_ROWS = 1000
+# Verbs that must never reach the database, mapped to the pattern that catches
+# them. Redundant three times over - the connection is read-only, the driver
+# refuses a second statement, and a leading SELECT or WITH is required - but
+# cheap, and it turns a mistake into a clear message instead of a SQLite error.
+FORBIDDEN = {
+    keyword: rf"\b{keyword}\b"
+    for keyword in (
+        "DROP",
+        "DELETE",
+        "INSERT",
+        "UPDATE",
+        "ALTER",
+        "CREATE",
+        "TRUNCATE",
+        "EXEC",
+        "EXECUTE",
+        "ATTACH",
+        "DETACH",
+    )
+} | {
+    # The table-valued forms - pragma_table_info, pragma_database_list, which
+    # reports the file's path on disk - need the trailing \w*. A plain
+    # \bPRAGMA\b misses them, because `_` is a word character.
+    "PRAGMA": r"\bPRAGMA\w*",
+    # Disabled by default in Python's sqlite3, so this is a guard against that
+    # default ever changing rather than against today's behaviour.
+    "LOAD_EXTENSION": r"\bLOAD_EXTENSION\b",
+}
+
+BUDGET_EXCEEDED_MESSAGE = "that query took too long to run - please ask something narrower"
 MAX_RESULT_CHARS = 5000
 HISTORY_CONTEXT = 4
 
@@ -40,7 +76,6 @@ Sparsity (important):
 
 Important Guidelines:
 - Prefer aggregation queries with GROUP BY, SUM, COUNT, AVG, etc. when summarizing data
-- Always include a LIMIT clause (max 1000 rows)
 - Use appropriate WHERE clauses to filter data
 - For name searches, use LOWER() function for case-insensitive matching
 """
@@ -51,12 +86,19 @@ language questions about a baby names database into SQL queries.
 {SCHEMA_CONTEXT}
 
 Rules:
-1. Only generate SELECT queries
-2. Always include LIMIT 1000 in your queries
-3. Prefer using aggregations (GROUP BY, SUM, COUNT, AVG, MAX, MIN) to summarize data
+1. Generate read-only queries only: a query must begin with SELECT, or with WITH for a
+   CTE. Never INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, ATTACH or PRAGMA.
+2. CTEs are welcome. Prefer `WITH ranked AS (...) SELECT ...` over a repeated subquery
+   when a question needs two stages, such as ranking and then filtering.
+3. A LIMIT of {MAX_ROWS} rows is applied to your query automatically, so you need not add
+   one. Add your own smaller LIMIT when the question asks for a specific number of rows
+   ("the top 5"), and it will be respected.
+4. Never write a recursive CTE (WITH RECURSIVE) or a cross join. Queries are cancelled
+   after a few seconds, and those are the two that never finish.
+5. Prefer using aggregations (GROUP BY, SUM, COUNT, AVG, MAX, MIN) to summarize data
    rather than returning large result sets
-4. Return only the SQL query, no explanation or markdown formatting
-5. Use proper SQL syntax for SQLite
+6. Return only the SQL query, no explanation or markdown formatting
+7. Use proper SQL syntax for SQLite
 """
 
 ANSWER_SYSTEM_PROMPT = """You are a helpful assistant that answers questions about baby
@@ -84,45 +126,46 @@ def get_client() -> Groq:
     return Groq(api_key=config.GROQ_API_KEY)
 
 
+def _bounded(query: str) -> str:
+    """Wrap a query so the row cap is the outermost thing it does.
+
+    Reading LIMIT out of the query text cannot work: the model's LIMIT may sit
+    in a subquery, where rewriting it answers a different question, and a
+    trailing `-- comment` both hides a cap that is there and swallows one
+    appended to the end. Wrapping needs to know none of that.
+    """
+    inner = query.strip().rstrip(";").rstrip()
+    # The newline is load-bearing: without it a trailing `--` comment would
+    # swallow the closing parenthesis.
+    return f"SELECT * FROM (\n{inner}\n) LIMIT {MAX_ROWS}"
+
+
 def validate_sql_query(query: str) -> tuple[bool, str]:
-    """Validate SQL query for safety — only SELECT statements are allowed."""
+    """Check that a query only reads, and wrap it in the row cap.
+
+    Returns ``(True, query_to_run)`` — the wrapped query, not the one passed in
+    — or ``(False, reason)``, where the reason is shown to whoever asked the
+    question.
+    """
     if not query:
         return False, "Empty query"
 
     query_upper = query.strip().upper()
 
-    if not query_upper.startswith("SELECT"):
-        return False, "Only SELECT queries are allowed"
+    # A leading WITH is a read: SQLite also accepts WITH ... INSERT/UPDATE/DELETE,
+    # but those verbs are refused below and the connection is read-only besides.
+    if not re.match(r"(SELECT|WITH)\b", query_upper):
+        return False, "Only read-only SELECT or WITH queries are allowed"
 
-    dangerous = [
-        "DROP",
-        "DELETE",
-        "INSERT",
-        "UPDATE",
-        "ALTER",
-        "CREATE",
-        "TRUNCATE",
-        "EXEC",
-        "EXECUTE",
-        "PRAGMA",
-        "ATTACH",
-        "DETACH",
-    ]
-    for keyword in dangerous:
-        if re.search(rf"\b{keyword}\b", query_upper):
+    for keyword, pattern in FORBIDDEN.items():
+        if re.search(pattern, query_upper):
             return False, f"Query contains forbidden keyword: {keyword}"
 
-    if "LIMIT" not in query_upper:
-        if query.rstrip().endswith(";"):
-            query = query.rstrip()[:-1].rstrip() + f" LIMIT {MAX_ROWS};"
-        else:
-            query = query.rstrip() + f" LIMIT {MAX_ROWS}"
-
-    return True, query
+    return True, _bounded(query)
 
 
 def execute_safe_sql(query: str) -> tuple[list[dict] | None, list[str] | None, str | None]:
-    """Execute a validated SELECT on a read-only connection with a row cap.
+    """Execute a validated read on a budgeted, read-only connection.
 
     Returns (rows, columns, error).
     """
@@ -131,12 +174,8 @@ def execute_safe_sql(query: str) -> tuple[list[dict] | None, list[str] | None, s
         return None, None, result
     query = result
 
-    limit_match = re.search(r"LIMIT\s+(\d+)", query, flags=re.IGNORECASE)
-    if limit_match and int(limit_match.group(1)) > MAX_ROWS:
-        query = re.sub(r"LIMIT\s+\d+", f"LIMIT {MAX_ROWS}", query, flags=re.IGNORECASE)
-
     try:
-        conn = database.connect()
+        conn = database.connect_for_generated_sql()
         try:
             cursor = conn.execute(query)
             columns = [c[0] for c in cursor.description]
@@ -144,6 +183,12 @@ def execute_safe_sql(query: str) -> tuple[list[dict] | None, list[str] | None, s
         finally:
             conn.close()
         return rows, columns, None
+    except sqlite3.OperationalError as e:
+        # The budget in database.connect_for_generated_sql fires as a bare
+        # "interrupted", which tells whoever asked the question nothing.
+        if "interrupted" in str(e):
+            return None, None, BUDGET_EXCEEDED_MESSAGE
+        return None, None, str(e)
     except sqlite3.Error as e:
         return None, None, str(e)
 

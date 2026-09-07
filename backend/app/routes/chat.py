@@ -15,15 +15,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# The history is written by the caller, not by us, and only its last few
+# entries are ever read (chatbot.HISTORY_CONTEXT). Unbounded, it is the cheapest
+# way to spend the provider quota that the per-turn rate limit does not cover:
+# one request, arbitrarily many tokens. These bounds are generous next to a real
+# conversation and small next to an abusive one.
+MAX_HISTORY_ENTRIES = 20
+MAX_HISTORY_CHARS = 4000
+
+
 class HistoryEntry(BaseModel):
     role: str
-    content: str = ""
-    sql: str | None = None
+    content: str = Field(default="", max_length=MAX_HISTORY_CHARS)
+    sql: str | None = Field(default=None, max_length=MAX_HISTORY_CHARS)
 
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=500)
-    history: list[HistoryEntry] = Field(default_factory=list)
+    history: list[HistoryEntry] = Field(default_factory=list, max_length=MAX_HISTORY_ENTRIES)
 
 
 class ChatResponse(BaseModel):

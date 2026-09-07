@@ -51,8 +51,9 @@ import numpy as np
 
 SP = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SP)
-from data import SERIES, bucket  # noqa: E402
 from pooled3 import parse_origins  # noqa: E402
+
+from data import SERIES, bucket  # noqa: E402
 
 FLOOR = 1e-12
 H = 5
@@ -403,7 +404,8 @@ def conditional_table(arms, cal, test, level):
     """The test the marginal table cannot run: is the band right *per situation*?"""
     print(f"\n=== nominal {100 * level:.0f}%, split by position relative to the name's peak ===")
     print(
-        f"{'arm':14} {'bin':10} {'n':>6} {'cover':>7} {'lo%':>6} {'hi%':>6} {'intScore':>9} {'asym':>6}"
+        f"{'arm':14} {'bin':10} {'n':>6} {'cover':>7} {'lo%':>6} {'hi%':>6} "
+        f"{'intScore':>9} {'asym':>6}"
     )
     for arm in arms:
         arm.fit(cal, level)

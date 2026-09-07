@@ -61,6 +61,10 @@ GRIDS = {
     "lr": [0.03, 0.05, 0.1],
     "trees": [300, 600, 1000],
     "min_child": [50, 200, 1000],
+    # Recency (issue #34 recommendation 2). Only swept when the run asks for
+    # it, since a `half_life` absent from `hp` is absent from the sweep.
+    "half_life": [10, 20, 40, 80],
+    "window": [15, 25, 40, 60],
 }
 
 
@@ -179,14 +183,33 @@ def _lgb_params(hp, objective, seed):
     return p
 
 
-def train_gbt(series, origin, sets, coh, hp, weight, power, clip, extra, objective, seed=0):
-    """One booster per horizon, on the rows observable at `origin`."""
+def train_gbt(
+    series,
+    origin,
+    sets,
+    coh,
+    hp,
+    weight,
+    power,
+    clip,
+    extra,
+    objective,
+    seed=0,
+    half_life=None,
+    window=None,
+):
+    """One booster per horizon, on the rows observable at `origin`.
+
+    `half_life` and `window` are issue #34's recommendation 2: the training
+    pool reaches back to 1930 and weights a 1935 name-origin like a 2014 one,
+    which is only right if naming dynamics are the same process throughout.
+    """
     import lightgbm as lgb
 
-    tr = pooled2.train_rows(series, origin, sets, coh, extra)
+    tr = pooled2.train_rows(series, origin, sets, coh, extra, window)
     X = np.vstack([r["x"] for r in tr])
     Y = np.vstack([r["y"] for r in tr])
-    w = pooled2.pop_weights(tr, power, clip) if weight == "pop" else None
+    w = pooled2.row_weights(tr, origin, weight, power, clip, half_life)
     models = []
     for i in range(H):
         ok = ~np.isnan(Y[:, i])
@@ -221,19 +244,35 @@ def tune(all_series, eval_series, origins, sets, coh, base, a, extra):
     """Coordinate descent over the grid, scored only on origins < the test one."""
     hp = dict(base)
     rows = {o: pooled2.rows_for(eval_series, [o], sets, coh, extra=extra) for o in origins}
+    grids = {k: v for k, v in GRIDS.items() if k in hp}
 
     def run(cand):
         s = []
         for o in origins:
             models, _ = train_gbt(
-                all_series, o, sets, coh, cand, a.weight, a.power, a.clip, extra, a.objective
+                all_series,
+                o,
+                sets,
+                coh,
+                cand,
+                a.weight,
+                a.power,
+                a.clip,
+                extra,
+                a.objective,
+                half_life=cand.get("half_life"),
+                window=cand.get("window"),
             )
             s.append(score_of(pooled2.evaluate(rows[o], forecast_gbt(models, rows[o]))))
+            # A window changes the row set, so its rows cannot stay cached
+            # alongside the full-history ones at the same origin.
+            if cand.get("window"):
+                pooled2.evict_train_rows(o)
         return float(np.mean(s))
 
     best = run(hp)
     print(f"  start {hp} -> {best:.4f}", flush=True)
-    for param, values in GRIDS.items():
+    for param, values in grids.items():
         for v in values:
             if v == hp[param]:
                 continue
@@ -260,11 +299,23 @@ def main():
     ap.add_argument("--trees", type=int, default=600)
     ap.add_argument("--min-child", type=int, default=200)
     ap.add_argument("--seeds", type=int, default=1, help="average this many seeds' forecasts")
+    ap.add_argument(
+        "--half-life",
+        type=float,
+        default=0.0,
+        help="recency weight: a training origin this many years older counts half (0 = off)",
+    )
+    ap.add_argument(
+        "--window",
+        type=int,
+        default=0,
+        help="train only on the most recent W origins (0 = all the way back to 1930)",
+    )
     ap.add_argument("--tune", action="store_true", help="sweep hyperparameters first")
     ap.add_argument(
         "--grid",
         default="",
-        help="override the sweep, e.g. 'leaves=7,15,31;lr=0.01,0.03;trees=150,300'",
+        help="replace the sweep, e.g. 'leaves=7,15,31;lr=0.01,0.03' — only these move",
     )
     ap.add_argument("--tune-origins", default="2009,2014")
     ap.add_argument("--eval-origins", default="2019")
@@ -283,11 +334,21 @@ def main():
     sets.discard("life")
     eval_series = load(a.top, a.mid, a.rest)
 
-    for part in filter(None, a.grid.split(";")):
-        k, v = part.split("=")
-        GRIDS[k] = [float(x) if k == "lr" else int(x) for x in v.split(",")]
+    if a.grid:
+        # An explicit grid replaces the sweep rather than adding to it, so a
+        # run can move one knob with everything else pinned.
+        GRIDS.clear()
+        for part in filter(None, a.grid.split(";")):
+            k, v = part.split("=")
+            GRIDS[k] = [float(x) if "." in x else int(x) for x in v.split(",")]
 
     hp = {"leaves": a.leaves, "lr": a.lr, "trees": a.trees, "min_child": a.min_child}
+    # Only sweep recency if it was asked for: it belongs in `hp` so `tune` can
+    # move it, but a run that never mentions it should behave exactly as before.
+    if a.half_life:
+        hp["half_life"] = a.half_life
+    if a.window:
+        hp["window"] = a.window
     if a.tune and a.model == "gbt":
         hp = tune(
             all_series,
@@ -308,7 +369,17 @@ def main():
         rows = pooled2.rows_for(eval_series, [eo], sets, coh, extra=extra)
         if a.model == "ridge":
             models, n_train = pooled2.train(
-                all_series, eo, sets, coh, a.lam, a.weight, a.power, a.clip, extra
+                all_series,
+                eo,
+                sets,
+                coh,
+                a.lam,
+                a.weight,
+                a.power,
+                a.clip,
+                extra,
+                hp.get("half_life"),
+                hp.get("window"),
             )
             preds = pooled2.forecast(models, rows)
         else:
@@ -318,7 +389,19 @@ def main():
             acc = np.zeros((len(rows), H))
             for s in range(a.seeds):
                 models, n_train = train_gbt(
-                    all_series, eo, sets, coh, hp, a.weight, a.power, a.clip, extra, a.objective, s
+                    all_series,
+                    eo,
+                    sets,
+                    coh,
+                    hp,
+                    a.weight,
+                    a.power,
+                    a.clip,
+                    extra,
+                    a.objective,
+                    s,
+                    half_life=hp.get("half_life"),
+                    window=hp.get("window"),
                 )
                 acc += np.log(np.vstack(forecast_gbt(models, rows)))
             preds = list(np.exp(acc / a.seeds))
@@ -327,6 +410,8 @@ def main():
         head = f"{a.name} model={a.model} sets={sorted(sets) + (['life'] if extra else [])}"
         if a.model == "gbt":
             head += f" {hp} obj={a.objective} seeds={a.seeds}"
+        if hp.get("half_life") or hp.get("window"):
+            head += f" half_life={hp.get('half_life')} window={hp.get('window')}"
         else:
             head += f" lam={a.lam}"
         print(f"\n{head}\norigin {eo} ({n_train:,} training name-origins, {fit_s:.0f}s)")

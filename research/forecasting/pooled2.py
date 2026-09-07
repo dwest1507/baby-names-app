@@ -175,14 +175,23 @@ def predict(model, X):
 
 
 _TRAIN_CACHE = {}
+FIRST_TRAIN_ORIGIN = 1930
 
 
-def train_rows(series, origin, sets, coh, extra=None):
-    """Training rows for one origin, built once and reused across penalties."""
-    key = (id(series), origin, tuple(sorted(sets)), getattr(extra, "tag", None))
+def train_rows(series, origin, sets, coh, extra=None, window=None):
+    """Training rows for one origin, built once and reused across penalties.
+
+    `window`, if given, keeps only the most recent W training origins — the
+    hard-cutoff form of recency weighting, for when 1940s naming dynamics are
+    thought to be a different process rather than merely a less relevant one.
+    """
+    first = FIRST_TRAIN_ORIGIN
+    if window:
+        first = max(first, origin - H - window + 1)
+    key = (id(series), origin, tuple(sorted(sets)), getattr(extra, "tag", None), first)
     if key not in _TRAIN_CACHE:
         _TRAIN_CACHE[key] = rows_for(
-            series, list(range(1930, origin - H + 1)), sets, coh, extra=extra
+            series, list(range(first, origin - H + 1)), sets, coh, extra=extra
         )
     return _TRAIN_CACHE[key]
 
@@ -209,11 +218,46 @@ def pop_weights(rows, power=1.0, clip=50.0):
     return np.clip(w / w.mean(), 0.0, clip)
 
 
-def train(series, origin, sets, coh, lam, weight, power=1.0, clip=50.0, extra=None):
-    tr = train_rows(series, origin, sets, coh, extra)
+def recency_weights(rows, origin, half_life):
+    """Geometric decay in how old a training row's origin is.
+
+    Training pools name-origins back to 1930 and weights a 1935 row like a 2014
+    one. `half_life` is in years of origin age: a row whose origin sits
+    `half_life` years before this one counts half as much. Normalised to mean 1
+    so it composes with the popularity weights without changing the effective
+    sample size.
+    """
+    age = np.array([origin - r["origin"] for r in rows], dtype=float)
+    w = 0.5 ** (age / half_life)
+    return w / w.mean()
+
+
+def row_weights(rows, origin, weight, power, clip, half_life=None):
+    """Popularity weights, recency weights, or their product."""
+    w = pop_weights(rows, power, clip) if weight == "pop" else None
+    if half_life:
+        rw = recency_weights(rows, origin, half_life)
+        w = rw if w is None else w * rw
+    return w
+
+
+def train(
+    series,
+    origin,
+    sets,
+    coh,
+    lam,
+    weight,
+    power=1.0,
+    clip=50.0,
+    extra=None,
+    half_life=None,
+    window=None,
+):
+    tr = train_rows(series, origin, sets, coh, extra, window)
     X = np.vstack([r["x"] for r in tr])
     Y = np.vstack([r["y"] for r in tr])
-    w = pop_weights(tr, power, clip) if weight == "pop" else None
+    w = row_weights(tr, origin, weight, power, clip, half_life)
     models = []
     for i in range(H):
         ok = ~np.isnan(Y[:, i])

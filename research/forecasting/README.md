@@ -57,6 +57,7 @@ $PY conformal.py  .work/all.jsonl --method combo_pooled_ens --cal-origins 2014 -
 | `quantiles.py` | fits the prediction quantiles themselves with pinball loss, one booster per (alpha, horizon) |
 | `intervals.py` | scores band constructions against each other — residual, direct-quantile and conformalised — on interval score, not coverage alone |
 | `reconcile.py` | makes the per-name forecasts add up to the share total they have to sum to, and scores what that costs or buys |
+| `smooth.py` | how jagged the five-year path is, and what smoothing it costs on accuracy |
 
 ## Reading the metrics
 
@@ -71,8 +72,10 @@ The findings are in [FINDINGS.md](FINDINGS.md) (round 1), [FINDINGS-2.md](FINDIN
 (round 2 — the untested hypotheses from round 1, plus a correction to one of its
 recommendations) [FINDINGS-3.md](FINDINGS-3.md) (round 3 — boosted trees in place of the
 pooled ridge), [FINDINGS-4.md](FINDINGS-4.md) (round 4 — the same comparison over 25 origins
-instead of one) and [FINDINGS-5.md](FINDINGS-5.md) (round 5 — fitting the prediction quantiles
-directly, and making the forecasts add up: both work, neither for the reason expected).
+instead of one) [FINDINGS-5.md](FINDINGS-5.md) (round 5 — fitting the prediction quantiles
+directly, and making the forecasts add up: both work, neither for the reason expected) and
+[FINDINGS-6.md](FINDINGS-6.md) (round 6 — unweighted quantiles and recency weighting both fail;
+smoothing the forecast path succeeds).
 Round 2's pipeline:
 
 ```bash
@@ -167,3 +170,34 @@ $PY reconcile.py .work/gbt_full.jsonl --out .work/recon.jsonl   # drift table + 
 $PY reconcile.py .work/gbt_full.jsonl --set top1000             # constraint inside the top 1000
 $PY origins.py   .work/recon.jsonl                              # does it hold by origin?
 ```
+
+Round 6 closes issue #34's recommendations 1, 2 and 5. Its three parts are independent.
+
+```bash
+# 1. the same quantile fit as round 5, with the popularity weights removed
+$PY quantiles.py --alphas 0.025,0.1,0.5,0.9,0.975 --weight none \
+                 --leaves 15 --lr 0.03 --trees 300 --min-child 200 \
+                 --eval-origins 1995,1999,2003,2008,2012,2016,2019 \
+                 --name qr_now --out .work/qr_now.jsonl
+$PY intervals.py .work/qr_now.jsonl --cal-origins 1995,1999,2003 \
+                 --test-origins 2008,2012,2016,2019 --compare direct,resid_tiervol
+
+# 2. recency: `--half-life` decays a training row by its origin's age, `--window`
+#    cuts it off. half_life=1000000 is the off arm — the decay is 1 over 85 years.
+#    `--grid` now *replaces* the sweep, so everything else stays pinned.
+$PY pooled3.py --model gbt --sets "" --leaves 15 --lr 0.03 --trees 300 --min-child 200 \
+               --half-life 40 --tune --grid "half_life=1000000,80,40,20,10" \
+               --tune-origins 1995,2000,2005,2010 --eval-origins 1995:2019 \
+               --name gbt_hl --out .work/gbt_hl.jsonl
+
+# 3. the shape of the five-year path, and what smoothing it costs
+$PY smooth.py .work/gbt_many.jsonl --smooth-score --examples 6
+$PY smooth.py .work/gbt_full.jsonl --with ma --write .work/gbt_full_sm.jsonl
+$PY reconcile.py .work/gbt_full_sm.jsonl --targets naive --hows prop --test naive_prop
+```
+
+Smoothing goes **before** reconciliation: `ma` preserves each path's five-year endpoint but moves
+h1-h4, which is exactly what the reconciler's per-horizon sums are computed over.
+
+Round 6's findings are in [FINDINGS-6.md](FINDINGS-6.md) — recommendations 1 and 2 are negative,
+5 is positive and turns out to be an accuracy change rather than a presentation one.

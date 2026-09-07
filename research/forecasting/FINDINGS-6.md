@@ -25,8 +25,7 @@ times on ranks 101-1000. Neither is significant on the top 100.
 The methodological finding still matters more. **A four-origin tuning block put the decay's
 measured value at +0.0007 when its true value over 25 origins is +0.0025**, and understated the
 window by 1.6x as well, because the effect grows with the origin and the block sits in the era
-where it barely exists. Round 4
-established tuning on early origins as the leakage-free discipline; it is the wrong place to
+where it barely exists. Round 4 established tuning on early origins as the leakage-free discipline; it is the wrong place to
 measure any parameter whose effect varies with the origin, and nothing in the harness flags
 which parameters those are.
 
@@ -39,8 +38,9 @@ beats the one that discounts. What the data supports is an interior optimum on h
 to train on — about four decades — not a claim that the 1940s are a different process.
 
 Recommendation 5 was ranked last and framed as a presentation check — "worth a histogram of
-second differences before anything ships". It is the only change in this round worth shipping,
-it is free at runtime, and it does not trade one tier against another except in the deep tail.
+second differences before anything ships". It is an accuracy change, free at runtime, and it does
+not trade one tier against another except in the deep tail. Two of this round's three
+recommendations are worth shipping, not one.
 
 
 ## 1. Refitting the quantiles without popularity weights (recommendation 1)

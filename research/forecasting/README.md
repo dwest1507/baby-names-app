@@ -74,8 +74,8 @@ recommendations) [FINDINGS-3.md](FINDINGS-3.md) (round 3 — boosted trees in pl
 pooled ridge), [FINDINGS-4.md](FINDINGS-4.md) (round 4 — the same comparison over 25 origins
 instead of one) [FINDINGS-5.md](FINDINGS-5.md) (round 5 — fitting the prediction quantiles
 directly, and making the forecasts add up: both work, neither for the reason expected) and
-[FINDINGS-6.md](FINDINGS-6.md) (round 6 — unweighted quantiles and recency weighting both fail;
-smoothing the forecast path succeeds).
+[FINDINGS-6.md](FINDINGS-6.md) (round 6 — unweighted quantiles fail; recency weighting and path
+smoothing both work, and the early tuning block hides the first of them).
 Round 2's pipeline:
 
 ```bash
@@ -184,11 +184,18 @@ $PY intervals.py .work/qr_now.jsonl --cal-origins 1995,1999,2003 \
 
 # 2. recency: `--half-life` decays a training row by its origin's age, `--window`
 #    cuts it off. half_life=1000000 is the off arm — the decay is 1 over 85 years.
-#    `--grid` now *replaces* the sweep, so everything else stays pinned.
+#    `--grid` now *replaces* the sweep, so everything else stays pinned. The sweep
+#    itself is not the answer here: a recency parameter has less to do the further
+#    back the origin sits, so the early tuning block understates it sixfold. Read
+#    the 25-origin comparison and the by-origin trend, not the sweep's mean.
 $PY pooled3.py --model gbt --sets "" --leaves 15 --lr 0.03 --trees 300 --min-child 200 \
                --half-life 40 --tune --grid "half_life=1000000,80,40,20,10" \
                --tune-origins 1995,2000,2005,2010 --eval-origins 1995:2019 \
                --name gbt_hl --out .work/gbt_hl.jsonl
+cat .work/gbt_hl.jsonl .work/gbt_many.jsonl > .work/hl_cmp.jsonl
+$PY origins.py .work/hl_cmp.jsonl --common        # the by-origin trend is the point
+cat .work/hl_cmp.jsonl .work/naive_many.jsonl > .work/hl_paired.jsonl
+$PY paired.py  .work/hl_paired.jsonl --a gbt_hl --b gbt_pop
 
 # 3. the shape of the five-year path, and what smoothing it costs
 $PY smooth.py .work/gbt_many.jsonl --smooth-score --examples 6
@@ -199,5 +206,7 @@ $PY reconcile.py .work/gbt_full_sm.jsonl --targets naive --hows prop --test naiv
 Smoothing goes **before** reconciliation: `ma` preserves each path's five-year endpoint but moves
 h1-h4, which is exactly what the reconciler's per-horizon sums are computed over.
 
-Round 6's findings are in [FINDINGS-6.md](FINDINGS-6.md) — recommendations 1 and 2 are negative,
-5 is positive and turns out to be an accuracy change rather than a presentation one.
+Round 6's findings are in [FINDINGS-6.md](FINDINGS-6.md) — recommendation 1 is negative, 2 and 5
+are positive, and the largest result is methodological: tuning on early origins, which round 4
+established as the leakage-free discipline, cannot measure a parameter whose job depends on how
+much history exists.

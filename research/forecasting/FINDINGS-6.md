@@ -193,7 +193,7 @@ floor of a four-origin sweep and puts the window gain an order of magnitude abov
 
 **This is not a result yet.** It has had no 25-origin confirmation, and after what the half-life
 form did to its own sweep number, the tuning block's figure is the least trustworthy part of it.
-`.work/round6-window25.sh` runs the confirmation; read it exactly as section 2 reads the
+The README's round-6 block has the command; read its output exactly as section 2 reads the
 half-life one — the paired bootstrap and the by-origin trend, not the sweep mean.
 
 Note also that a window and a half-life are not the same experiment run twice. A window discards;

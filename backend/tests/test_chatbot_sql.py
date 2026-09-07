@@ -220,3 +220,49 @@ def test_prompt_and_validator_agree_on_what_is_allowed():
     # writing its own LIMIT is what enforces one.
     assert "Always include LIMIT" not in SQL_SYSTEM_PROMPT
     assert str(MAX_ROWS) in SQL_SYSTEM_PROMPT
+
+
+def test_prompt_instructs_multi_year_cte_joins():
+    from app.services.chatbot import SQL_SYSTEM_PROMPT
+
+    prompt = SQL_SYSTEM_PROMPT.lower()
+    assert "cte" in prompt
+    assert "(name, sex)" in prompt
+    assert "multi-year" in prompt
+
+
+def test_rising_names_cross_year_query_executes_within_budget():
+    # The user-reported query comparing 2024 against 2023 outside the top 100.
+    # Without idx_names_name_sex_year this fails the 5-second query resource budget.
+    query = """
+    WITH t2024 AS (
+        SELECT name, sex, popularity_percent, popularity_rank, total_count
+        FROM names
+        WHERE year = 2024 AND total_count > 0
+    ),
+    t2023 AS (
+        SELECT name, sex, popularity_percent AS pct_2023, total_count AS cnt_2023
+        FROM names
+        WHERE year = 2023 AND total_count > 0
+    )
+    SELECT
+        t2024.name,
+        t2024.sex,
+        t2024.popularity_percent AS pct_2024,
+        t2023.pct_2023,
+        (t2024.popularity_percent - t2023.pct_2023) AS change
+    FROM t2024
+    JOIN t2023 USING (name, sex)
+    WHERE t2024.popularity_rank > 100
+      AND t2024.popularity_percent > t2023.pct_2023
+    ORDER BY change DESC
+    LIMIT 20
+    """
+    started = time.monotonic()
+    rows, columns, error = execute_safe_sql(query)
+    elapsed = time.monotonic() - started
+
+    assert error is None
+    assert columns == ["name", "sex", "pct_2024", "pct_2023", "change"]
+    assert isinstance(rows, list)
+    assert elapsed < 5.0

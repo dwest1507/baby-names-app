@@ -66,6 +66,25 @@ def test_top_names_lookup_uses_an_index_rather_than_scanning(monkeypatch):
     assert "sex=? AND year=?" in plan, plan
 
 
+def test_cross_year_join_uses_composite_index_rather_than_scanning(sample_db):
+    conn = sqlite3.connect(sample_db)
+    try:
+        query = (
+            "SELECT y1.name, y1.sex, y1.popularity_percent, y2.popularity_percent "
+            "FROM names y1 "
+            "JOIN names y2 ON y1.name = y2.name AND y1.sex = y2.sex "
+            "WHERE y1.year = 2024 AND y2.year = 2023"
+        )
+        plan_rows = conn.execute(f"EXPLAIN QUERY PLAN {query}").fetchall()
+        plan = "\n".join(row[3] for row in plan_rows)
+    finally:
+        conn.close()
+
+    assert "SCAN" not in plan, plan
+    assert "idx_names_name_sex_year" in plan, plan
+    assert "TEMP B-TREE" not in plan, plan
+
+
 def test_forecasts_table_holds_only_eligible_names_and_excludes_history(sample_db):
     """The `forecasts` table's own shape and eligibility filtering aren't
     observable through the HTTP surface (an absent row and an HTTP 200 with

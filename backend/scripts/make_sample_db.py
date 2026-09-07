@@ -72,6 +72,7 @@ def build(path: str) -> None:
     conn.executemany("INSERT INTO names VALUES (?, ?, ?, ?, ?, ?)", rows)
     db_schema.create_indexes(conn)
     conn.execute(db_schema.CREATE_FORECASTS_TABLE)
+    conn.execute("ANALYZE")
     conn.commit()
     conn.close()
     print(f"Wrote {len(rows)} rows to {path}")

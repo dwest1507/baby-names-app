@@ -178,6 +178,29 @@ mean and hides the trend inside it. **Tune early for honesty, confirm over all 2
 by-origin trend before believing either number.** Any future window, decay or burn-in has the
 same shape.
 
+### The hard-cutoff form looks stronger, and is not finished
+
+`--window` keeps only the most recent W training origins. On the same tuning block:
+
+| window (origins) | 15 | 25 | 40 | 60 | 1000 (all) |
+|---|---|---|---|---|---|
+| poolSkill, top 100 + ranks 101-1000 | *in flight* | 0.3195 | **0.3226** | 0.3216 | 0.3200 |
+
+`window=40` beats full history by **+0.0026 on the tuning block** — the block that understates.
+For scale, this sweep's `window=1000` arm (0.3200) and the half-life sweep's `off` arm (0.3198)
+are the same model by construction and differ by 0.0002, which makes that the measured noise
+floor of a four-origin sweep and puts the window gain an order of magnitude above it.
+
+**This is not a result yet.** It has had no 25-origin confirmation, and after what the half-life
+form did to its own sweep number, the tuning block's figure is the least trustworthy part of it.
+`.work/round6-window25.sh` runs the confirmation; read it exactly as section 2 reads the
+half-life one — the paired bootstrap and the by-origin trend, not the sweep mean.
+
+Note also that a window and a half-life are not the same experiment run twice. A window discards;
+a half-life discounts. That the discarding form looks better on the tuning block while the
+sharpest *discount* (half-life 10) was the worst arm in its own sweep is not obviously
+consistent, and is one more reason to wait for the confirmation before believing either.
+
 ### What this does not say
 
 The effect is small, and the top-100 tier — the one the product cares about most — is the one

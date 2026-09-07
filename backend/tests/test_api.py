@@ -329,3 +329,28 @@ def test_the_health_probe_is_never_rate_limited():
     probe = {"X-Forwarded-For": "203.0.113.40"}
     for _ in range(GENERAL_BURST + 5):
         assert anonymous.get("/api/health", headers=probe).status_code == 200
+
+
+def test_chat_rejects_an_oversized_history():
+    # `message` is capped at 500 characters, but `history` was not capped at
+    # all - and it is client-controlled, so it is what an abusive caller grows
+    # to spend the provider quota. Only the last few entries are ever read.
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "How many names?",
+            "history": [{"role": "user", "content": "x" * 50_000}],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_chat_rejects_too_many_history_entries():
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "How many names?",
+            "history": [{"role": "user", "content": "hi"} for _ in range(500)],
+        },
+    )
+    assert response.status_code == 422

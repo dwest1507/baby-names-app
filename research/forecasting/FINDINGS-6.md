@@ -4,9 +4,10 @@ Three of issue #34's open recommendations, taken in the order the issue ranked t
 **1** (refit the prediction quantiles without popularity weights), **2** (recency-weighted
 training rows) and **5** (check the five-horizon path is smooth).
 
-Two of the three are negative for the reason the issue gave, and the third — the one the issue
-ranked last and framed as a presentation check — is the only change in this round that is worth
-shipping. It also turns out not to be a presentation change at all.
+Two of the three are negative, and in both cases what fails is the *mechanism* the issue
+proposed, not just the recommendation. The third — the one the issue ranked last and framed as a
+presentation check — is the only change in this round worth shipping, and it turns out not to be
+a presentation change at all.
 
 **Summary.**
 
@@ -16,11 +17,12 @@ shipping. It also turns out not to be a presentation change at all.
 | 2. recency-weighted training rows | **no** — monotone degradation as the decay sharpens | best half-life beats "off" by **0.0002** |
 | 5. smooth the five-horizon path | **yes** — and it is an accuracy change, not a cosmetic one | **+0.0024 / +0.0023 / +0.0012** poolSkill in the top three tiers, all P=100% |
 
-Both negatives are negatives *for the reason the issue gave*, which is the same pattern round 5
-reported: the issue has been good at spotting defects and less good at diagnosing them. The
-mid-tier band really is too narrow on the upside and the fit really does over-weight popular
-names; those two facts are just not connected. Recency really is unmodelled and the 1930s really
-are a different era; the pooled model just does not care.
+Both negatives repeat round 5's pattern: the issue has been good at spotting defects and less
+good at diagnosing them. The mid-tier band really is too narrow on the upside, and the fit really
+does over-weight popular names — those two facts are simply not connected, and removing the
+weights leaves the defect where it was. Recency really is unmodelled and the 1930s really were a
+different era; the pooled model just does not care, because what it learns from a 1935
+name-origin is a trajectory shape, not a level.
 
 Recommendation 5 was ranked last and framed as a presentation check — "worth a histogram of
 second differences before anything ships". It is the only change in this round worth shipping,
@@ -223,6 +225,22 @@ reconciler targets at those horizons. The order has to be **smooth first, reconc
 reconciling and then smoothing would break the adding-up the reconciliation just imposed.
 `smooth.py --write` emits a smoothed copy of a forecast file so the two can be run in that order
 and scored together.
+
+Run that way over all 21,792 names x 25 origins, **the two changes compose**. Reconciliation on
+top of the smoothed forecasts still pays, in three of four tiers:
+
+| tier | reconciliation on raw (round 5) | reconciliation on smoothed |
+|---|---|---|
+| ranks 1-100 | +0.0056 [+0.0029, +0.0085] P=100% | +0.0052 [+0.0024, +0.0080] P=100% |
+| ranks 101-1000 | +0.0012 [−0.0002, +0.0027] P=95% | +0.0001 [−0.0014, +0.0015] P=56% |
+| 1001-5000 | +0.0037 [+0.0030, +0.0044] P=100% | +0.0024 [+0.0017, +0.0031] P=100% |
+| >5000 | +0.0072 [+0.0067, +0.0077] P=100% | +0.0055 [+0.0050, +0.0059] P=100% |
+
+The gains shrink a little, which is what two changes correcting partly-overlapping error should
+do, and the stack ends ahead of either alone on the top 100 (poolSkill 0.353 against 0.351 for
+reconciliation alone and 0.348 for smoothing alone, from a free forecast at 0.345). Ranks
+101-1000 are the exception: smoothing takes that tier most of the way on its own (0.279 -> 0.282)
+and reconciliation then has nothing left to remove there.
 
 ## New dead ends for the list
 

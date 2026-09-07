@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0](https://github.com/dwest1507/baby-names-app/compare/baby-names-app-v1.0.1...baby-names-app-v1.1.0) (2026-09-07)
+
+
+### Features
+
+* Add resource budget for generated SQL queries ([6303959](https://github.com/dwest1507/baby-names-app/commit/6303959093691c3254cd9c98b79a78e017e05e9c))
+
+
+### Bug Fixes
+
+* **api:** bound the client-supplied chat history ([7fe8602](https://github.com/dwest1507/baby-names-app/commit/7fe8602b4c26354703aaba434bcb8ae5c7dbab32))
+* **chatbot:** bound generated SQL by cost, not just by permission ([d6352bf](https://github.com/dwest1507/baby-names-app/commit/d6352bf17c06bc45e88c0495fed1a9b6f5a435dd))
+
 ## [1.0.1](https://github.com/dwest1507/baby-names-app/compare/baby-names-app-v1.0.0...baby-names-app-v1.0.1) (2026-09-04)
 
 

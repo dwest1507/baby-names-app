@@ -48,7 +48,8 @@ def main():
     cal_origins = {int(x) for x in a.cal_origins.split(",")}
     levels = [float(x) for x in a.levels.split(",")]
 
-    rows = [json.loads(line) for line in open(a.path)]
+    with open(a.path) as f:
+        rows = [json.loads(line) for line in f]
     rows = [r for r in rows if r["method"] == a.method]
     for r in rows:
         p, ac = np.array(r["pred"]), np.array(r["actual"])

@@ -27,9 +27,10 @@ H = 5
 def load_rows(paths):
     by = {}
     for p in paths:
-        for line in open(p):
-            r = json.loads(line)
-            by.setdefault((r["key"], r["origin"]), {})[r["method"]] = r
+        with open(p) as f:
+            for line in f:
+                r = json.loads(line)
+                by.setdefault((r["key"], r["origin"]), {})[r["method"]] = r
     return by
 
 

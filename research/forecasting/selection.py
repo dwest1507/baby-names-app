@@ -19,7 +19,8 @@ def main():
     )
     a = ap.parse_args()
 
-    rows = [json.loads(line) for line in open(a.path)]
+    with open(a.path) as f:
+        rows = [json.loads(line) for line in f]
     by = defaultdict(dict)
     for r in rows:
         p, ac = np.array(r["pred"]), np.array(r["actual"])

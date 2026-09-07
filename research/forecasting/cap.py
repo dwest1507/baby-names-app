@@ -48,7 +48,11 @@ def main():
     ap.add_argument("--out", default=os.path.join(WORK, "capped.jsonl"))
     a = ap.parse_args()
 
-    rows = [json.loads(line) for p in a.paths for line in open(p)]
+    rows = []
+    for p in a.paths:
+        with open(p) as f:
+            for line in f:
+                rows.append(json.loads(line))
     caps = caps_from(rows, {int(x) for x in a.fit_origins.split(",")}, a.quantile)
     print("caps on |log(pred/last)|: " + " ".join(f"h{i + 1}={c:.2f}" for i, c in enumerate(caps)))
 

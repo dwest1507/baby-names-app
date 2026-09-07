@@ -55,10 +55,11 @@ def main():
 
     by = {}
     for p in a.paths:
-        for line in open(p):
-            r = json.loads(line)
-            if r["method"] in (m1, m2):
-                by.setdefault((r["key"], r["origin"]), {})[r["method"]] = r
+        with open(p) as fh:
+            for line in fh:
+                r = json.loads(line)
+                if r["method"] in (m1, m2):
+                    by.setdefault((r["key"], r["origin"]), {})[r["method"]] = r
     both = [d for d in by.values() if m1 in d and m2 in d]
     print(f"{len(both)} name-origins carry both {m1} and {m2}")
 

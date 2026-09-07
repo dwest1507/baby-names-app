@@ -91,54 +91,59 @@ def main():
     all_series = load_all()
     eval_series = load(a.top, a.mid, a.rest)
 
-    out = open(a.out, "w") if a.out else None
     n_written = 0
-    for eo in pooled3.parse_origins(a.eval_origins):
-        pooled2.evict_train_rows()
-        t0 = time.time()
-        rows = pooled2.rows_for(eval_series, [eo], sets, None)
-        point, quant, n_train = train_quantiles(
-            all_series, eo, sets, hp, alphas, a.weight, a.power, a.clip
-        )
-        X = np.vstack([r["x"] for r in rows])
-        last = np.array([r["last"] for r in rows])
-        P = np.column_stack([m.predict(X) for m in point])
-        Q = {aa: np.column_stack([quant[(aa, i)].predict(X) for i in range(H)]) for aa in alphas}
 
-        print(
-            f"\n{a.name} origin {eo} ({n_train:,} training name-origins, "
-            f"{time.time() - t0:.0f}s, {len(alphas) * H + H} boosters)"
-        )
-        pooled3.show(pooled2.evaluate(rows, list(np.exp(P) * last[:, None])), "point (l2)")
-        if 0.5 in Q:
-            pooled3.show(
-                pooled2.evaluate(rows, list(np.exp(Q[0.5]) * last[:, None])), "median (q50)"
+    def run(out):
+        nonlocal n_written
+        for eo in pooled3.parse_origins(a.eval_origins):
+            pooled2.evict_train_rows()
+            t0 = time.time()
+            rows = pooled2.rows_for(eval_series, [eo], sets, None)
+            point, quant, n_train = train_quantiles(
+                all_series, eo, sets, hp, alphas, a.weight, a.power, a.clip
             )
+            X = np.vstack([r["x"] for r in rows])
+            last = np.array([r["last"] for r in rows])
+            P = np.column_stack([m.predict(X) for m in point])
+            Q = {aa: np.column_stack([quant[(aa, i)].predict(X) for i in range(H)]) for aa in alphas}
 
-        for j, r in enumerate(rows):
-            if any(v is None for v in r["actual"]):
-                continue
-            out_row = {
-                "key": r["key"],
-                "rank": r["rank"],
-                "origin": r["origin"],
-                "method": a.name,
-                "secs": 0.0,
-                "pred": [float(v) for v in np.exp(P[j]) * r["last"]],
-                "q": {str(aa): [float(v) for v in np.exp(Q[aa][j]) * r["last"]] for aa in alphas},
-                "actual": r["actual"],
-                "last": r["last"],
-                "years": [r["origin"] + i for i in range(1, H + 1)],
-            }
+            print(
+                f"\n{a.name} origin {eo} ({n_train:,} training name-origins, "
+                f"{time.time() - t0:.0f}s, {len(alphas) * H + H} boosters)"
+            )
+            pooled3.show(pooled2.evaluate(rows, list(np.exp(P) * last[:, None])), "point (l2)")
+            if 0.5 in Q:
+                pooled3.show(
+                    pooled2.evaluate(rows, list(np.exp(Q[0.5]) * last[:, None])), "median (q50)"
+                )
+
+            for j, r in enumerate(rows):
+                if any(v is None for v in r["actual"]):
+                    continue
+                out_row = {
+                    "key": r["key"],
+                    "rank": r["rank"],
+                    "origin": r["origin"],
+                    "method": a.name,
+                    "secs": 0.0,
+                    "pred": [float(v) for v in np.exp(P[j]) * r["last"]],
+                    "q": {str(aa): [float(v) for v in np.exp(Q[aa][j]) * r["last"]] for aa in alphas},
+                    "actual": r["actual"],
+                    "last": r["last"],
+                    "years": [r["origin"] + i for i in range(1, H + 1)],
+                }
+                if out:
+                    out.write(json.dumps(out_row) + "\n")
+                n_written += 1
             if out:
-                out.write(json.dumps(out_row) + "\n")
-            n_written += 1
-        if out:
-            out.flush()
+                out.flush()
 
-    if out:
-        out.close()
+    if a.out:
+        with open(a.out, "w") as out:
+            run(out)
         print(f"\nwrote {n_written} rows -> {a.out}")
+    else:
+        run(None)
 
 
 if __name__ == "__main__":

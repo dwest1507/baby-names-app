@@ -293,17 +293,18 @@ def main():
         keep_o = set(parse_origins(a.origins))
 
     rows = []
-    for line in open(a.path):
-        r = json.loads(line)
-        if a.method and r["method"] != a.method:
-            continue
-        if keep_o and r["origin"] not in keep_o:
-            continue
-        if any(v is None for v in r["actual"]):
-            continue
-        rows.append(r)
-        if a.limit and len(rows) >= a.limit:
-            break
+    with open(a.path) as f:
+        for line in f:
+            r = json.loads(line)
+            if a.method and r["method"] != a.method:
+                continue
+            if keep_o and r["origin"] not in keep_o:
+                continue
+            if any(v is None for v in r["actual"]):
+                continue
+            rows.append(r)
+            if a.limit and len(rows) >= a.limit:
+                break
     print(
         f"{len(rows)} rows, "
         f"origins {min(r['origin'] for r in rows)}-{max(r['origin'] for r in rows)}"

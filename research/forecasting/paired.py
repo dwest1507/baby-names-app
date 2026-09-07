@@ -39,10 +39,11 @@ def main():
     a = ap.parse_args()
 
     by = defaultdict(dict)
-    for line in open(a.path):
-        r = json.loads(line)
-        if r["method"] in (a.a, a.b, "naive"):
-            by[(r["key"], r["origin"])][r["method"]] = r
+    with open(a.path) as f:
+        for line in f:
+            r = json.loads(line)
+            if r["method"] in (a.a, a.b, "naive"):
+                by[(r["key"], r["origin"])][r["method"]] = r
 
     rng = np.random.default_rng(a.seed)
     print(

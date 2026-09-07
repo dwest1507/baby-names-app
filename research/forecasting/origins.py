@@ -36,7 +36,11 @@ def main():
     ap.add_argument("--tiers-pooled", default="top100,top1000", help="tiers for the summary line")
     a = ap.parse_args()
 
-    rows = [json.loads(line) for p in a.paths for line in open(p)]
+    rows = []
+    for p in a.paths:
+        with open(p) as f:
+            for line in f:
+                rows.append(json.loads(line))
     methods = sorted({r["method"] for r in rows})
     origins = sorted({r["origin"] for r in rows})
 

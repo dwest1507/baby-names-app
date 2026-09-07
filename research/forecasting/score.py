@@ -13,7 +13,8 @@ from data import bucket
 
 
 def load(path):
-    rows = [json.loads(line) for line in open(path)]
+    with open(path) as f:
+        rows = [json.loads(line) for line in f]
     for r in rows:
         p = np.array(r["pred"])
         a = np.array(r["actual"])

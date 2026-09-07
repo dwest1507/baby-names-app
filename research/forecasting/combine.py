@@ -11,7 +11,11 @@ FLOOR = 1e-12
 def main():
     paths = sys.argv[1:-1]
     out = sys.argv[-1]
-    rows = [json.loads(line) for p in paths for line in open(p)]
+    rows = []
+    for p in paths:
+        with open(p) as f:
+            for line in f:
+                rows.append(json.loads(line))
     by = {}
     for r in rows:
         by.setdefault((r["key"], r["origin"]), {})[r["method"]] = r

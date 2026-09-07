@@ -78,14 +78,15 @@ def series_context():
 
 def load_rows(path, ctx):
     rows = []
-    for line in open(path):
-        r = json.loads(line)
-        r["lpred"] = np.log(np.maximum(r["pred"], FLOOR))
-        r["lact"] = np.log(np.maximum(r["actual"], FLOOR))
-        r["lq"] = {float(k): np.log(np.maximum(v, FLOOR)) for k, v in r.get("q", {}).items()}
-        r["tier"] = bucket(r["rank"])
-        r["vol"], r["below_peak"] = ctx(r["key"], r["origin"])
-        rows.append(r)
+    with open(path) as f:
+        for line in f:
+            r = json.loads(line)
+            r["lpred"] = np.log(np.maximum(r["pred"], FLOOR))
+            r["lact"] = np.log(np.maximum(r["actual"], FLOOR))
+            r["lq"] = {float(k): np.log(np.maximum(v, FLOOR)) for k, v in r.get("q", {}).items()}
+            r["tier"] = bucket(r["rank"])
+            r["vol"], r["below_peak"] = ctx(r["key"], r["origin"])
+            rows.append(r)
     return rows
 
 

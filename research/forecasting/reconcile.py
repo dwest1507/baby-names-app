@@ -202,7 +202,8 @@ def main():
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
 
-    rows = [json.loads(line) for line in open(a.path)]
+    with open(a.path) as f:
+        rows = [json.loads(line) for line in f]
     methods = sorted({r["method"] for r in rows})
     method = a.method or methods[0]
     rows = [r for r in rows if r["method"] == method]

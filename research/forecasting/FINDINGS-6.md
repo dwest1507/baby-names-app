@@ -5,22 +5,27 @@ Three of issue #34's open recommendations, taken in the order the issue ranked t
 training rows) and **5** (check the five-horizon path is smooth).
 
 One is negative, two are positive, and none of the three works the way the issue said it would.
-The one the issue ranked first fails outright. The one it ranked second works — but only at
-recent origins, which is why the tuning discipline this project has been using could not see it.
-The one it ranked last and framed as a presentation check is the largest of the three and is not
-a presentation change at all.
+The one the issue ranked first fails outright. The one it ranked second works, in a form the
+issue did not propose, and only at recent origins — which is why the tuning discipline this
+project has been using nearly missed it. The one it ranked last and framed as a presentation
+check is an accuracy change, not a presentation change.
 
 **Summary.**
 
 | recommendation | verdict | number |
 |---|---|---|
 | 1. quantiles without popularity weights | **no** — the tier split is not the weighting | mid-tier miss-high 14.2% -> 13.7%, and −0.039 top-100 poolSkill on the point model |
-| 2. recency-weighted training rows | **yes, small** — but invisible to the tuning block that chose it | **+0.003 / +0.008 / +0.006** in the lower three tiers, P=100%, 21 / 25 origins |
+| 2. recency-weighted training rows | **yes** — as a 40-origin training *window*, and largely invisible to the tuning block that chose it | **+0.009 / +0.015 / +0.007** in the lower three tiers, P=100%, 21 / 25 origins |
 | 5. smooth the five-horizon path | **yes** — and it is an accuracy change, not a cosmetic one | **+0.0024 / +0.0023 / +0.0012** poolSkill in the top three tiers, all P=100% |
 
-The methodological finding matters more than any of the three. **A four-origin tuning block put
-recency's measured value at +0.0007 when its true value over 25 origins is +0.0025**, because
-the effect grows with the origin and the block sits in the era where it does not exist. Round 4
+Recommendation 2 is the largest point-forecast gain of the three, and it is not the version the
+issue proposed: a hard 40-origin training **window** beats the geometric decay by about three
+times on ranks 101-1000. Neither is significant on the top 100.
+
+The methodological finding still matters more. **A four-origin tuning block put the decay's
+measured value at +0.0007 when its true value over 25 origins is +0.0025**, and understated the
+window by 1.6x as well, because the effect grows with the origin and the block sits in the era
+where it barely exists. Round 4
 established tuning on early origins as the leakage-free discipline; it is the wrong place to
 measure any parameter whose effect varies with the origin, and nothing in the harness flags
 which parameters those are.
@@ -28,10 +33,10 @@ which parameters those are.
 All three repeat round 5's pattern: the issue has been good at spotting defects and less good at
 diagnosing them. The mid-tier band really is too narrow on the upside, and the fit really does
 over-weight popular names — those two facts are simply not connected, and removing the weights
-leaves the defect where it was. Recency really does help, but not because the 1930s are a
-different process: sharper decay makes things worse, and the winning half-life leaves the 1930s
-at roughly a quarter weight rather than dropping them. The model wants the old data, it just
-wants it to count for less.
+leaves the defect where it was. Recency really does help, but not with the mechanism the issue
+gave: inside either instrument, sharper is worse, and yet the instrument that discards outright
+beats the one that discounts. What the data supports is an interior optimum on how much history
+to train on — about four decades — not a claim that the 1940s are a different process.
 
 Recommendation 5 was ranked last and framed as a presentation check — "worth a histogram of
 second differences before anything ships". It is the only change in this round worth shipping,
@@ -107,7 +112,7 @@ is how many years before the forecast origin that row's own origin sits, normali
 it composes with the `share^0.5` popularity weights without changing the effective sample size.
 `--window` is the hard-cutoff form: keep only the most recent W training origins.
 
-### The sweep says nothing. The held-out test says yes.
+### The decay: the sweep says nothing, the held-out test says yes
 
 Swept on **origins 1995, 2000, 2005 and 2010** — round 4's leakage-free tuning block — with every
 other hyperparameter pinned. `half_life=1000000` is the **off** arm: the decay is exactly 1 over
@@ -178,28 +183,58 @@ mean and hides the trend inside it. **Tune early for honesty, confirm over all 2
 by-origin trend before believing either number.** Any future window, decay or burn-in has the
 same shape.
 
-### The hard-cutoff form looks stronger, and is not finished
+### The hard-cutoff form is better, and by more
 
-`--window` keeps only the most recent W training origins. On the same tuning block:
+`--window` keeps only the most recent W training origins — it discards where the half-life
+discounts. On the same tuning block:
 
 | window (origins) | 15 | 25 | 40 | 60 | 1000 (all) |
 |---|---|---|---|---|---|
-| poolSkill, top 100 + ranks 101-1000 | *in flight* | 0.3195 | **0.3226** | 0.3216 | 0.3200 |
+| poolSkill, top 100 + ranks 101-1000 | 0.3125 | 0.3195 | **0.3226** | 0.3216 | 0.3200 |
 
-`window=40` beats full history by **+0.0026 on the tuning block** — the block that understates.
-For scale, this sweep's `window=1000` arm (0.3200) and the half-life sweep's `off` arm (0.3198)
-are the same model by construction and differ by 0.0002, which makes that the measured noise
-floor of a four-origin sweep and puts the window gain an order of magnitude above it.
+A clear interior optimum at 40, and this time the sweep can see it: +0.0026 against a **measured
+noise floor of 0.0002** — this sweep's `window=1000` arm (0.3200) and the half-life sweep's `off`
+arm (0.3198) are the same model by construction and differ by that much.
 
-**This is not a result yet.** It has had no 25-origin confirmation, and after what the half-life
-form did to its own sweep number, the tuning block's figure is the least trustworthy part of it.
-The README's round-6 block has the command; read its output exactly as section 2 reads the
-half-life one — the paired bootstrap and the by-origin trend, not the sweep mean.
+Confirmed over all 25 origins against the round-4 model, it is roughly three times the half-life
+form on the tier that matters most after the top 100:
 
-Note also that a window and a half-life are not the same experiment run twice. A window discards;
-a half-life discounts. That the discarding form looks better on the tuning block while the
-sharpest *discount* (half-life 10) was the worst arm in its own sweep is not obviously
-consistent, and is one more reason to wait for the confirmation before believing either.
+| tier | **window=40** | half_life=40 | round-4 model |
+|---|---|---|---|
+| ranks 1-100 | 0.347 (+0.002 [−0.003, +0.007] P=80%) | 0.347 (+0.001, P=90%) | 0.345 |
+| ranks 101-1000 | **0.288 (+0.009 [+0.007, +0.011] P=100%)** | 0.283 (+0.003) | 0.279 |
+| 1001-5000 | **0.116 (+0.015 [+0.013, +0.018] P=100%)** | 0.109 (+0.008) | 0.101 |
+| >5000 | **0.046 (+0.007 [+0.004, +0.010] P=100%)** | 0.045 (+0.006) | 0.039 |
+
+**+0.0063 on the combined top-1000 metric, winning 21 of 25 origins.** That makes it the largest
+point-forecast improvement in this round — bigger than path smoothing (+0.0023 on ranks
+101-1000) and bigger than round 5's reconciliation (+0.0012). The top 100 is again the one tier
+where it is not significant.
+
+It shows the same trend, for the same unexplained reason, and it caught the same trap:
+
+| origin block | window=40 gain | half_life=40 gain |
+|---|---|---|
+| 1995-2002 | +0.0029 | +0.0003 |
+| 2003-2010 | +0.0072 | +0.0031 |
+| 2011-2019 | +0.0086 | +0.0040 |
+| **the four tuning origins** | **+0.0040** | **+0.0007** |
+| all 25 | +0.0063 | +0.0025 |
+
+The tuning block understates the window by 1.6x and the half-life by 3.6x. Both understate;
+neither sweep is the number to report.
+
+### Discarding beats discounting, which is not what the sweeps suggested
+
+Taken separately, each sweep says sharper is worse — half-life 40 -> 20 -> 10 loses steadily, and
+`window=15` is the worst arm in its own sweep. Taken together, the *harder* instrument wins:
+`window=40` drops everything before 40 origins ago outright and beats a half-life that leaves
+those rows at a quarter weight, by a factor of three on ranks 101-1000.
+
+Both facts hold at once, so the shape is a genuine interior optimum on *how much history*, not a
+monotone preference for recency: about four decades of training origins is right, and both too
+little and too much cost real skill. Whether the two compose — a window with a decay inside it —
+is untested, and the obvious next experiment.
 
 ### What this does not say
 
@@ -333,8 +368,11 @@ and reconciliation then has nothing left to remove there.
 - **`--weight none` on the quantile fit.** Does not close the tier split (mid-tier miss-high
   14.2% -> 13.7%) and costs 0.039 of top-100 poolSkill on the point forecast. The weighting is
   not what makes the mid-tier band wrong.
-- **Sharp recency decay.** Half-lives below 40 years degrade monotonically (40 -> 20 -> 10 loses
-  0.0018 then 0.0016). The 1930s are worth down-weighting, not discarding.
+- **Sharp recency in either instrument.** Half-lives below 40 years degrade monotonically
+  (40 -> 20 -> 10 loses 0.0018 then 0.0016), and `window=15` is the worst arm in its own sweep
+  (0.3125 against 0.3226 at 40). Four decades of training origins is an interior optimum.
+- **Reading a four-origin sweep as the answer** for anything whose effect varies with the origin.
+  It understated the window by 1.6x and the decay by 3.6x.
 - **A straight line in log space** as the forecast path. Smoothest possible, wins ranks
   101-1000 by +0.0019, and is the worst arm in both tail tiers (−0.0104 in `rest`) because it
   cannot express flattening-out. The path's bend carries information; only its corners do not.
@@ -350,10 +388,11 @@ Round 5's list stands, with two additions and one deletion:
   it, and before reconciling. Endpoint-preserving, so the five-year number does not move; worth
   +0.001-0.002 in the three tiers that matter and −0.0009 in the deep tail; costs nothing at
   runtime.
-- **Add, with a caveat:** `--half-life 40` on the training weights. Positive in all four tiers,
-  significant in three, 21 of 25 origins, free at runtime — but not significant on the top 100
-  (+0.001, P=90%), which is the tier the product cares about most. Worth taking because it costs
-  nothing; not worth defending if a future change trades against it.
+- **Add, with a caveat:** `--window 40` — train on the most recent 40 origins only. +0.009 on
+  ranks 101-1000, +0.015 on 1001-5000, +0.007 in the tail, all P=100%, 21 of 25 origins, and it
+  makes training *cheaper* rather than costing anything. Prefer it to `--half-life 40`, which is
+  the same idea at a third the size. The caveat is the same for both: not significant on the top
+  100 (+0.002, P=80%).
 - **Delete:** "refit the quantiles unweighted" as an open question. It is answered.
 
 ## What is left in issue #34

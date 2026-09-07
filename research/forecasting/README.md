@@ -197,9 +197,10 @@ $PY origins.py .work/hl_cmp.jsonl --common        # the by-origin trend is the p
 cat .work/hl_cmp.jsonl .work/naive_many.jsonl > .work/hl_paired.jsonl
 $PY paired.py  .work/hl_paired.jsonl --a gbt_hl --b gbt_pop
 
-# the hard-cutoff form. `--window` changes the row set rather than the weights, so
-# its rows cannot share the cache and the sweep costs more. Its 25-origin
-# confirmation is the number to read, not the sweep's — same reason as above.
+# the hard-cutoff form, and the better of the two: `--window` changes the row set
+# rather than the weights, so its rows cannot share the cache and the sweep costs
+# more — but it also makes every later fit cheaper. Read the 25-origin
+# confirmation, not the sweep, for the same reason as above.
 $PY pooled3.py --model gbt --sets "" --leaves 15 --lr 0.03 --trees 300 --min-child 200 \
                --window 25 --tune --grid "window=1000,60,40,25,15" \
                --tune-origins 1995,2000,2005,2010 --eval-origins 2015:2019 --name gbt_win
@@ -220,5 +221,5 @@ h1-h4, which is exactly what the reconciler's per-horizon sums are computed over
 
 Round 6's findings are in [FINDINGS-6.md](FINDINGS-6.md) — recommendation 1 is negative, 2 and 5
 are positive, and the largest result is methodological: tuning on early origins, which round 4
-established as the leakage-free discipline, cannot measure a parameter whose job depends on how
-much history exists.
+established as the leakage-free discipline, understates any parameter whose effect varies with
+the origin — by 1.6x for the training window and 3.6x for the decay.

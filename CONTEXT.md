@@ -17,9 +17,36 @@ A lightweight SQLite database with a subset of historical names used for fast lo
 _Avoid_: Test database, stub database
 
 **Precomputed Forecast**:
-A 5-year statistical forecast (ARIMA/ETS with empirical confidence intervals) generated offline for an eligible baby name.
+A 5-year statistical projection (point forecast and conformal uncertainty bands) computed offline for an eligible baby name.
 _Avoid_: Dynamic forecast, live prediction
+
+**Origin Year**:
+The final observed calendar year in a training history from which a forecast or backtest step projects.
+_Avoid_: Base year, cutoff year, anchor year, reference year
+
+**Forecast Horizon**:
+The multi-year window (currently 5 years) projected into unobserved time beyond an origin year.
+_Avoid_: Forecast window, prediction period, forward span
+
+**Validation Holdout**:
+The most recent 5-year window of fully observed records used to evaluate forecast accuracy and residual calibration for display on the search page.
+_Avoid_: Test set, evaluation slice, holdout window
+
+**Backtest Span**:
+The sequence of annual origin years (from 1995 through the latest year with a complete 5-year holdout) evaluated to measure per-name skill and conformal interval coverage.
+_Avoid_: Benchmark sweep, rolling test origins, evaluation slice
+
+**Popularity Tier**:
+One of four rank-based frequency brackets (`top100`, `top1000`, `top5000`, `rest`) defined within an origin year, used to stratify evaluation, acceptance rules, and conformal interval calibration.
+_Avoid_: Rank bracket, frequency bucket, volume tier
+
+**Model Evaluation**:
+The precomputed summary of backtest skill scores per popularity tier stored in the built database to self-certify artifact quality before deployment.
+_Avoid_: Model metrics, benchmark report, score card
+
 
 **Query Resource Budget**:
 A wall-clock execution deadline enforced on model-generated SQL statements to prevent worker pool starvation from runaway queries.
 _Avoid_: Query timeout, SQL gate
+
+

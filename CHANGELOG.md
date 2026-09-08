@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.2.0](https://github.com/dwest1507/baby-names-app/compare/baby-names-app-v1.1.0...baby-names-app-v1.2.0) (2026-09-08)
+
+
+### Features
+
+* add relational join index and chatbot prompt guidance ([#50](https://github.com/dwest1507/baby-names-app/issues/50)) ([6613370](https://github.com/dwest1507/baby-names-app/commit/6613370bd9a1aba487589be0d0ced854b41e00ad))
+* relational join index and reproducible SSA data ingestion ([#49](https://github.com/dwest1507/baby-names-app/issues/49)) ([392b264](https://github.com/dwest1507/baby-names-app/commit/392b264d3cbbaf93252cc20de97985416e064d6e))
+* reproducible SSA data ingestion pipeline and dev dependencies ([#51](https://github.com/dwest1507/baby-names-app/issues/51)) ([bc4597d](https://github.com/dwest1507/baby-names-app/commit/bc4597d26d59e288a021e0370c50a04650667f1d))
+
 ## [1.1.0](https://github.com/dwest1507/baby-names-app/compare/baby-names-app-v1.0.1...baby-names-app-v1.1.0) (2026-09-07)
 
 

@@ -67,8 +67,8 @@ dev: frontend-deps
 	@$(MAKE) -j2 dev-frontend dev-backend
 
 build-db:
-	@echo "Building the deployable database from data/names.db ..."
-	cd backend && uv run python scripts/build_db.py
+	@echo "Building the deployable database from SSA data..."
+	cd backend && uv run python scripts/build_db.py $(SOURCE) $(DB)
 	@echo "Built data/names.built.db — observed rows only, indexed."
 
 precompute-forecasts:

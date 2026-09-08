@@ -58,7 +58,7 @@ baby-names-app/
 │   ├── Dockerfile          Bakes the database in at build time (see below)
 │   └── tests/              Pytest suite (runs against a generated fixture DB)
 ├── data/                   Build artifacts only (gitignored — see "The Database")
-├── data_pipeline.ipynb     Data download/processing + ML training notebook
+├── data_pipeline.ipynb     Legacy data download/processing notebook (see make build-db)
 ├── model_exploration.ipynb Model experimentation notebook
 └── Makefile                Dev automation commands
 ```
@@ -140,14 +140,21 @@ moved to Hugging Face), and a non-database file, and reports whichever it finds 
 For local development, `make sample-db` generates a small database with a handful of names and
 plausible multi-decade trends — the full dataset has never been required for `make dev`.
 
-## Data Pipeline & ML Notebooks
+## Data Ingestion Pipeline & ML Notebooks
 
-The Jupyter notebooks are unchanged from the original project:
+Data ingestion is automated and reproducible via `make build-db` (`backend/scripts/build_db.py`),
+which downloads the official SSA baby names archive (handling SSA anti-bot protection via headless
+browser automation, or reusing a local `data/names.zip` archive if present), filters for observed
+records where counts exceed privacy suppression thresholds, calculates popularity percentages and
+ranks, applies canonical schema and indexes (including the `(name, sex, year)` composite index),
+and preserves precomputed forecasts in `data/names.built.db`. Data wrangling and browser automation
+dependencies (`pandas`, `selenium`) are isolated to the development dependency group so production
+containers remain minimal.
 
-- `data_pipeline.ipynb` downloads the SSA dataset (Selenium), computes popularity metrics,
-  writes `data/names.db`, and trains ML models (Linear Regression, Random Forest, XGBoost,
-  LSTM) for name popularity prediction
-- `model_exploration.ipynb` contains model experimentation
+The legacy Jupyter notebooks remain from the original exploration:
+
+- `data_pipeline.ipynb` prototype data processing and ML models (Linear Regression, Random Forest, XGBoost, LSTM)
+- `model_exploration.ipynb` model experimentation
 
 Install their dependencies with `pip install -r requirements.txt` (the web app itself uses
 `backend/pyproject.toml` and `frontend/package.json`).

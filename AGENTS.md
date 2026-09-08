@@ -58,9 +58,10 @@ Browser → Next.js (:3000) → /api/[...path]/route.ts (proxy) → FastAPI (:80
   exclusively through `frontend/lib`'s typed API client, which hits the `/api/*` proxy — never
   fetch the backend URL directly from a component.
 - The two root-level Jupyter notebooks (`data_pipeline.ipynb`, `model_exploration.ipynb`) are
-  a separate, unchanged data/ML pipeline (Selenium scraping, DB generation, model
-  experimentation) with its own `requirements.txt`; they're independent of the web app's
-  dependency files (`backend/pyproject.toml`, `frontend/package.json`).
+  a separate, legacy data/ML pipeline (Selenium scraping, model experimentation) with its own
+  `requirements.txt`; they're independent of the web app's dependency files (`backend/pyproject.toml`,
+  `frontend/package.json`). Reproducible database builds are automated via `make build-db`
+  (`backend/scripts/build_db.py`).
 
 ## Configuration
 

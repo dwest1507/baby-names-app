@@ -1,95 +1,258 @@
-"""Build the deployable names database from the pipeline's output.
+"""Build the deployable names database from SSA data.
 
-The pipeline's database cross-joins every name/sex pair with every year and
-zero-fills the gaps, so most of its rows are fabricated rather than observed.
-This script produces the artifact the backend is actually served from: the
-observed rows only, carrying the indexes the app's queries need.
-
-The result is what gets published and baked into the container image, so it is
-a first-class command rather than a one-off — re-run it whenever the pipeline
-produces a new database.
+This script produces the deployable database artifact: observed rows only,
+carrying the indexes the app's queries need, and preserving existing precomputed
+forecasts if already present.
 
 Usage: uv run python scripts/build_db.py [source_path] [output_path]
 """
 
+import os
+import re
 import sqlite3
 import sys
 import time
+import zipfile
+from collections.abc import Callable
 from pathlib import Path
+
+import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app import db_schema  # noqa: E402
 
 REPO_ROOT = Path(__file__).parent.parent.parent
-DEFAULT_SOURCE = str(REPO_ROOT / "data" / "names.db")
-DEFAULT_OUTPUT = str(REPO_ROOT / "data" / "names.built.db")
+DEFAULT_SOURCE = REPO_ROOT / "data" / "names.zip"
+DEFAULT_OUTPUT = REPO_ROOT / "data" / "names.built.db"
 
 
-def build(source: str, output: str) -> dict:
-    """Write the pruned, indexed database and return what it contains."""
-    source_path, output_path = Path(source), Path(output)
+def download_ssa_zip(dest_path: Path) -> Path:
+    """Download the official SSA names.zip archive via headless browser automation."""
+    dest_path = Path(dest_path)
+    download_dir = dest_path.parent
+    download_dir.mkdir(parents=True, exist_ok=True)
+
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.common.by import By
+
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+
+    prefs = {
+        "download.default_directory": str(download_dir.resolve()),
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "safebrowsing.enabled": True,
+    }
+    options.add_experimental_option("prefs", prefs)
+
+    driver = webdriver.Chrome(options=options)
+    try:
+        driver.execute_cdp_cmd(
+            "Page.setDownloadBehavior",
+            {"behavior": "allow", "downloadPath": str(download_dir.resolve())},
+        )
+        driver.get("https://www.ssa.gov/oact/babynames/limits.html")
+        time.sleep(2)
+
+        links = driver.find_elements(By.TAG_NAME, "a")
+        target_url = None
+        for link in links:
+            href = link.get_attribute("href")
+            if href and "names.zip" in href:
+                target_url = href
+                break
+
+        if not target_url:
+            target_url = "https://www.ssa.gov/oact/babynames/names.zip"
+
+        driver.get(target_url)
+
+        # Wait up to 30s for download to complete
+        start = time.time()
+        downloaded = download_dir / "names.zip"
+        while time.time() - start < 30:
+            if downloaded.exists() and not any(download_dir.glob("*.crdownload")):
+                break
+            time.sleep(0.5)
+
+        if not downloaded.exists():
+            raise RuntimeError(f"Download failed: {downloaded} not found after waiting.")
+
+        if downloaded.resolve() != dest_path.resolve():
+            downloaded.replace(dest_path)
+
+        return dest_path
+    finally:
+        driver.quit()
+
+
+def ingest_ssa_records(source_path: Path) -> pd.DataFrame:
+    """Read SSA yobYYYY.txt files from a zip or directory, returning observed rows.
+
+    Computes popularity_percent and popularity_rank per (sex, year).
+    """
+    source_path = Path(source_path)
+    frames = []
+
+    if source_path.is_file() and source_path.suffix.lower() == ".zip":
+        with zipfile.ZipFile(source_path, "r") as zf:
+            for item in zf.namelist():
+                match = re.search(r"yob(\d{4})\.txt$", item, re.IGNORECASE)
+                if match:
+                    year = int(match.group(1))
+                    with zf.open(item) as f:
+                        df_year = pd.read_csv(f, header=None, names=["name", "sex", "total_count"])
+                        df_year["year"] = year
+                        frames.append(df_year)
+    elif source_path.is_dir():
+        for file in source_path.iterdir():
+            match = re.search(r"yob(\d{4})\.txt$", file.name, re.IGNORECASE)
+            if match:
+                year = int(match.group(1))
+                df_year = pd.read_csv(file, header=None, names=["name", "sex", "total_count"])
+                df_year["year"] = year
+                frames.append(df_year)
+    else:
+        raise ValueError(f"Unsupported source format: {source_path}")
+
+    if not frames:
+        raise ValueError(f"No yobYYYY.txt files found in source: {source_path}")
+
+    df = pd.concat(frames, ignore_index=True)
+    df["year"] = df["year"].astype(int)
+    df["total_count"] = df["total_count"].astype(int)
+
+    # Observed rows only: counts must be positive (ADR 0003)
+    df = df[df["total_count"] > 0].reset_index(drop=True)
+    df = df.drop_duplicates(subset=["name", "sex", "year"])
+
+    # Popularity percent and rank per sex and year
+    totals = df.groupby(["sex", "year"])["total_count"].transform("sum")
+    df["popularity_percent"] = df["total_count"] / totals
+    df["popularity_rank"] = (
+        df.groupby(["sex", "year"])["popularity_percent"]
+        .rank(method="min", ascending=False)
+        .astype(int)
+    )
+
+    return df[
+        ["name", "sex", "total_count", "year", "popularity_percent", "popularity_rank"]
+    ].sort_values(by=["year", "sex", "popularity_rank"])
+
+
+def build(
+    source: str | Path | None = None,
+    output: str | Path | None = None,
+    download_if_missing: bool = True,
+    downloader: Callable[[Path], Path] | None = None,
+) -> dict:
+    """Write the observed, indexed database and return summary metrics."""
+    source_path = Path(source) if source is not None else DEFAULT_SOURCE
+    output_path = Path(output) if output is not None else DEFAULT_OUTPUT
+
     if not source_path.exists():
-        raise SystemExit(f"Source database not found: {source_path}")
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    if output_path.exists():
-        output_path.unlink()
+        if download_if_missing:
+            download_fn = downloader or download_ssa_zip
+            print(f"Source {source_path} not found. Downloading SSA data...")
+            download_fn(source_path)
+        else:
+            raise FileNotFoundError(f"Source file not found: {source_path}")
 
     started = time.monotonic()
-    conn = sqlite3.connect(str(output_path))
+    df = ingest_ssa_records(source_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Build in a temporary database file for atomicity and safety
+    tmp_output = output_path.with_suffix(".tmp.db")
+    if tmp_output.exists():
+        tmp_output.unlink()
+
+    conn = sqlite3.connect(str(tmp_output))
     try:
         conn.execute("PRAGMA journal_mode = OFF")
         conn.execute("PRAGMA synchronous = OFF")
         conn.execute(db_schema.CREATE_TABLE)
-        conn.execute("ATTACH DATABASE ? AS src", (str(source_path),))
 
-        (source_rows,) = conn.execute("SELECT COUNT(*) FROM src.names").fetchone()
-        # The only pruning rule: keep a row if a count was recorded against it.
-        conn.execute(
-            """
-            INSERT INTO names (name, sex, total_count, year, popularity_percent, popularity_rank)
-            SELECT name, sex, total_count, year, popularity_percent, popularity_rank
-            FROM src.names
-            WHERE total_count > 0
-            """
-        )
-        conn.commit()
-        conn.execute("DETACH DATABASE src")
-
+        df.to_sql("names", conn, if_exists="append", index=False)
         db_schema.create_indexes(conn)
+
         conn.execute(db_schema.CREATE_FORECASTS_TABLE)
+        conn.execute(db_schema.CREATE_CALIBRATION_TABLE)
+
+        forecasts_preserved = 0
+        # Preserve forecasts and calibration tables from existing database artifact if present
+        if output_path.exists():
+            db_uri = f"file:{output_path.resolve()}?mode=ro"
+            with sqlite3.connect(db_uri, uri=True) as existing_conn:
+                tables = {
+                    row[0]
+                    for row in existing_conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    ).fetchall()
+                }
+                if "forecasts" in tables:
+                    f_rows = existing_conn.execute(
+                        "SELECT name, sex, payload, coverage_hits, coverage_n FROM forecasts"
+                    ).fetchall()
+                    conn.executemany(
+                        "INSERT OR REPLACE INTO forecasts "
+                        "(name, sex, payload, coverage_hits, coverage_n) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        f_rows,
+                    )
+                    forecasts_preserved = len(f_rows)
+
+                if "calibration" in tables:
+                    c_rows = existing_conn.execute(
+                        "SELECT nominal_level, empirical_coverage, n FROM calibration"
+                    ).fetchall()
+                    conn.executemany(
+                        "INSERT OR REPLACE INTO calibration (nominal_level, empirical_coverage, n) "
+                        "VALUES (?, ?, ?)",
+                        c_rows,
+                    )
+
         conn.execute("ANALYZE")
         conn.commit()
-        (kept,) = conn.execute("SELECT COUNT(*) FROM names").fetchone()
+        (rows,) = conn.execute("SELECT COUNT(*) FROM names").fetchone()
     finally:
         conn.close()
 
-    # VACUUM in its own connection so it is not inside the transaction above.
-    conn = sqlite3.connect(str(output_path))
+    # VACUUM in its own connection
+    conn = sqlite3.connect(str(tmp_output))
     try:
         conn.execute("VACUUM")
     finally:
         conn.close()
 
+    # Atomic swap
+    os.replace(tmp_output, output_path)
+
     return {
-        "source_rows": source_rows,
-        "rows": kept,
-        "pruned": source_rows - kept,
+        "rows": rows,
+        "forecasts_preserved": forecasts_preserved,
         "bytes": output_path.stat().st_size,
         "seconds": time.monotonic() - started,
     }
 
 
 def main() -> None:
-    source = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_SOURCE
-    output = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_OUTPUT
+    source = sys.argv[1] if len(sys.argv) > 1 else str(DEFAULT_SOURCE)
+    output = sys.argv[2] if len(sys.argv) > 2 else str(DEFAULT_OUTPUT)
     result = build(source, output)
-    print(f"Source rows:  {result['source_rows']:,}")
-    print(f"Pruned:       {result['pruned']:,} fabricated rows removed")
-    print(f"Kept:         {result['rows']:,} observed rows")
-    print(f"Wrote:        {output} ({result['bytes'] / 1024 / 1024:.1f} MB)")
-    print(f"Took:         {result['seconds']:.1f}s")
+    print(f"Kept:                {result['rows']:,} observed rows")
+    print(f"Forecasts preserved: {result['forecasts_preserved']:,} rows")
+    print(f"Wrote:               {output} ({result['bytes'] / 1024 / 1024:.1f} MB)")
+    print(f"Took:                {result['seconds']:.1f}s")
 
 
 if __name__ == "__main__":

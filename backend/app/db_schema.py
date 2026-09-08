@@ -32,6 +32,8 @@ INDEXES = (
     "CREATE INDEX idx_names_lower_name_sex_year ON names (LOWER(name), sex, year)",
     # Serves the top-names query, which is by sex and year.
     "CREATE INDEX idx_names_sex_year ON names (sex, year)",
+    # Serves relational equality joins on name and sex across different years.
+    "CREATE INDEX idx_names_name_sex_year ON names (name, sex, year)",
 )
 
 

@@ -77,7 +77,8 @@ Sparsity (important):
 Important Guidelines:
 - Prefer aggregation queries with GROUP BY, SUM, COUNT, AVG, etc. when summarizing data
 - Use appropriate WHERE clauses to filter data
-- For name searches, use LOWER() function for case-insensitive matching
+- For multi-year trend or ranking comparisons, use CTEs joined on (name, sex)
+  (e.g. `JOIN ... USING (name, sex)`)
 """
 
 SQL_SYSTEM_PROMPT = f"""You are a SQL query generator. Your task is to translate natural
@@ -89,7 +90,8 @@ Rules:
 1. Generate read-only queries only: a query must begin with SELECT, or with WITH for a
    CTE. Never INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, ATTACH or PRAGMA.
 2. CTEs are welcome. Prefer `WITH ranked AS (...) SELECT ...` over a repeated subquery
-   when a question needs two stages, such as ranking and then filtering.
+   when a question needs two stages, such as ranking and then filtering. For multi-year
+   trend or ranking comparisons, use CTEs joined on (name, sex) (e.g. `JOIN ... USING (name, sex)`).
 3. A LIMIT of {MAX_ROWS} rows is applied to your query automatically, so you need not add
    one. Add your own smaller LIMIT when the question asks for a specific number of rows
    ("the top 5"), and it will be respected.

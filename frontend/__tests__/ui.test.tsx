@@ -36,4 +36,15 @@ describe('SexToggle', () => {
     await userEvent.click(screen.getByRole('radio', { name: 'Male' }))
     expect(onChange).toHaveBeenCalledWith('M')
   })
+
+  // It is used inside the search form, where a bare <button> would default to
+  // type="submit" and be activated by Enter in the name field ahead of the
+  // Search button itself.
+  it('chooses without submitting the form it sits in', () => {
+    render(<SexToggle value="F" onChange={vi.fn()} />)
+
+    for (const option of ['Female', 'Male']) {
+      expect(screen.getByRole('radio', { name: option })).toHaveAttribute('type', 'button')
+    }
+  })
 })

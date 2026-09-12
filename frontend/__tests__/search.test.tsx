@@ -621,3 +621,32 @@ describe('SearchPage pooled model', () => {
     expect(row!.textContent).toContain(formatPercent(newest.popularity_percent, 4))
   })
 })
+
+describe('SearchPage submission', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    getMeta.mockResolvedValue({ min_year: 1960, max_year: NEWEST_YEAR })
+  })
+
+  // A bare <button> in a form submits it, and pressing Enter in a text field
+  // activates the form's *first* submit button rather than the one the visitor
+  // would have clicked. With the sex toggle sitting between the name field and
+  // Search, that meant Enter picked "Female": the toggle flipped and the
+  // results shown were for the sex that was no longer selected.
+  it('searches the sex that is selected, whichever way the form is submitted', async () => {
+    const years = Array.from({ length: 40 }, (_, i) => 1986 + i)
+    const history = historyFor('Liam', years)
+    getNameHistory.mockResolvedValue({ name: 'Liam', sex: 'M', history })
+    getNameForecast.mockResolvedValue(emptyForecast('Liam', history))
+
+    const user = userEvent.setup()
+    render(<SearchPage />)
+    await user.click(screen.getByRole('radio', { name: 'Male' }))
+    await user.type(screen.getByLabelText('Name'), 'Liam{Enter}')
+
+    await waitFor(() => expect(getNameHistory).toHaveBeenCalledWith('Liam', 'M'))
+    expect(getNameForecast).toHaveBeenCalledWith('Liam', 'M')
+    expect(screen.getByRole('radio', { name: 'Male' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Female' })).toHaveAttribute('aria-checked', 'false')
+  })
+})

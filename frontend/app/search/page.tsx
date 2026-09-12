@@ -308,24 +308,28 @@ export default function SearchPage() {
                       </div>
                     </div>
                   </div>
-                  {/* Skill compares the holdout error against a naive baseline
-                      that just repeats the last observed value — see
-                      docs/adr/0011-conformal-bands-keyed-by-strata.md. A
-                      forecast that loses to that baseline is flagged rather
+                  {/* Skill compares this name's error against a naive baseline
+                      that just repeats the last observed value, averaged over
+                      every five-year window since 1995 rather than measured on
+                      the holdout alone — see
+                      docs/adr/0010-a-pooled-model-replaces-per-name-arima.md.
+                      A forecast that loses to that baseline is flagged rather
                       than shown with equal confidence. */}
                   <div className="mt-4">
                     {validation.skill >= 0 ? (
                       <p className="text-xs leading-relaxed text-emerald-400">
                         Beats the naive “no change” baseline by {formatPercent(validation.skill, 1)}
-                        : on the holdout years, this model&apos;s error was that much smaller than
-                        simply repeating the last recorded value.
+                        : averaged over {validation.skill_windows} five-year window
+                        {validation.skill_windows === 1 ? '' : 's'} since 1995, this model&apos;s
+                        error was that much smaller than simply repeating the last recorded value.
                       </p>
                     ) : (
                       <Notice variant="warning">
-                        This forecast performs worse than simply assuming no change — its holdout
-                        error was {formatPercent(Math.abs(validation.skill), 1)} higher than the
-                        naive baseline&apos;s. Treat the forecast and its confidence bands with
-                        caution.
+                        This forecast performs worse than simply assuming no change — across{' '}
+                        {validation.skill_windows} five-year window
+                        {validation.skill_windows === 1 ? '' : 's'} since 1995 its error was{' '}
+                        {formatPercent(Math.abs(validation.skill), 1)} higher than the naive
+                        baseline&apos;s. Treat the forecast and its confidence bands with caution.
                       </Notice>
                     )}
                   </div>

@@ -187,6 +187,7 @@ def build(
 
         conn.execute(db_schema.CREATE_FORECASTS_TABLE)
         conn.execute(db_schema.CREATE_CALIBRATION_TABLE)
+        conn.execute(db_schema.CREATE_MODEL_EVALUATION_TABLE)
 
         forecasts_preserved = 0
         # Preserve forecasts and calibration tables from existing database artifact if present
@@ -202,6 +203,18 @@ def build(
                     "calibration",
                     db_schema.CALIBRATION_COLUMNS,
                     required=len(db_schema.CALIBRATION_COLUMNS),
+                )
+                # The scores the deploy gate reads have to survive a `names`
+                # rebuild for the same reason the forecasts they describe do:
+                # otherwise reingesting the source would leave an artifact
+                # that still carries forecasts but can no longer say what they
+                # scored, and `verify-db` would reject it.
+                _preserve(
+                    existing_conn,
+                    conn,
+                    "model_evaluation",
+                    db_schema.MODEL_EVALUATION_COLUMNS,
+                    required=len(db_schema.MODEL_EVALUATION_COLUMNS),
                 )
 
         conn.execute("ANALYZE")

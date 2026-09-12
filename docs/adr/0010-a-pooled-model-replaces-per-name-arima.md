@@ -141,6 +141,43 @@ AIC, and four residual-diagnostic p-values are describing a fit that no longer h
 API serves it under `model`. It is stored once rather than copied into 24,700 payloads, for the
 same reason `calibration` is its own table.
 
+**Skill is measured across the whole backtest span, not on one window.** The batch fits at every
+origin from 1995 whose five-year window has since closed — 26 of them on the 2025 database,
+`range(1995, MAX(year) - 4)`, read off the data rather than written down — and scores every
+eligible name at each. What a name carries is the average of its own window skills, beside the
+count of windows behind it.
+
+One window would not support the claim the search page makes. The most recent one is 2021–25,
+which is largely a measurement of the birth-rate shock rather than of the name, and next year's
+rebuild would relabel every name with a different shock. Averaging over 26 windows dilutes any one
+period. Names eligible at fewer origins are averaged over fewer windows rather than excluded: a
+name first recorded in 2010 is scored on the windows it has, because the alternative leaves most
+of what visitors search with no figure at all.
+
+**The span is one advancing window, not 27 independent fits.** Consecutive origins want training
+sets that overlap in 39 of 40 years, and feature extraction — not boosting — is what this batch
+spends its time on: rebuilding each fit's own rows is 1,080 origin-passes against 71.
+`pooled.TrainingWindow` builds each origin once, hands it to every fit that wants it, and releases
+it when the span has moved past. That is also what holds memory flat: what is retained is the
+training window plus the handful of newer origins not yet in it, so backtesting 26 origins costs
+what fitting one does. Measured on the real database: 53 s for the first origin, which builds the
+whole window, then 12-18 s for each of the remaining 26 fits, at a peak of 1.5 GB.
+
+**The artifact certifies itself.** `model_evaluation` holds one row per popularity tier —
+`pool_skill`, `med_skill`, and the span (`origins_evaluated`, `min_origin`, `max_origin`) they were
+measured over. It is in the database rather than in a build log because the deploy gate is handed
+an artifact and nothing else, months after the run that produced it. Two scores rather than one,
+because they fail differently: `pool_skill` sums absolute errors before dividing and so is
+dominated by the names whose forecasts are most wrong, while `med_skill` is the median window
+skill, and a model that is excellent on the giants and useless below them passes the first and
+fails the second. A tier the span never populated is absent rather than zero, so a gate can tell
+"measured, and bad" from "never measured". What reads it is tracked separately.
+
+**Coverage stays where it was.** The bands are calibrated on one origin's residuals (ten years
+back), so counting a 1995 outcome against them would measure a band built from a later era's
+errors — an anachronism, not a larger sample. Interval coverage therefore remains the holdout
+origin's, as ADR 0011 describes it, and only the point skill is averaged across the span.
+
 **The port is pinned numerically.** `research/forecasting/make_parity_fixture.py` runs a generated
 set of series through the *research* modules and writes both the series and the predictions those
 modules produced to `backend/tests/fixtures/pooled_parity.json` (~380 KB, checked in).
@@ -186,6 +223,35 @@ else moves:
   percentile of real moves is one no ordinary forecast reaches, so nothing in the fixture is
   clipped and the published numbers alone would not notice a cap derived from the wrong rows.
 
-What is deliberately not done here, and is tracked separately: conformal bands stratified by
-tier × volatility; per-name skill averaged across all rolling origins; the visual demotion of the
-forecast line; and the `model_evaluation` table with the `verify-db` deploy gate that reads it.
+- **Measured on the real database** (2,181,032 observed rows, 1880-2025; 26 origins, 24,285
+  forecasts, 17,449 of them scored), the whole batch takes **7.0 minutes** — less than the 8.8 the
+  three-fit batch took, because the advancing window removes far more feature extraction than 24
+  extra fits add. poolSkill and medSkill by tier, against the naive baseline:
+
+  | tier | poolSkill | medSkill | ARIMA poolSkill (ADR 0010 context) |
+  |---|---|---|---|
+  | top100 | **0.374** | 0.437 | 0.161 |
+  | top1000 | **0.238** | 0.215 | — |
+  | top5000 | **0.096** | 0.071 | −0.211 |
+  | rest | **0.077** | 0.059 | −0.413 |
+
+  Positive in every tier, which is what the replacement was for, and above the 0.345 the research
+  measured for the free forecast on the top 100. Interval coverage is unchanged at 0.783 / 0.939,
+  which is the check that the advancing window did not quietly change the model.
+- **Window counts are real, not nominal.** Of the 17,449 scored names, 7,474 carry all 26 windows
+  and 9,975 carry fewer, down to one. The `skill_windows` figure beside the skill is what tells a
+  visitor which they are looking at.
+- **`validation.skill` no longer describes the holdout.** `mae`, `rmse`, `mape` and `points` still
+  do — they are what the predicted-against-actual table shows — but `skill` beside them is the
+  span-wide average, and `skill_windows` says how many windows it rests on. The search page says so
+  rather than continuing to claim the figure is the holdout's.
+- **The sample database gained a short-lived name.** Every profile in it was previously eligible for
+  the entire span, so a batch that silently dropped names eligible at fewer origins would have
+  passed. `Aria` is recorded from the mid-2000s and clears the ten-year minimum partway through,
+  which is the shape most real names have.
+- **`model_evaluation` is preserved across a `names` rebuild**, like `forecasts` and `calibration`,
+  so reingesting the source cannot leave an artifact that still carries forecasts but can no longer
+  say what they scored.
+
+What is deliberately not done here, and is tracked separately: the visual demotion of the forecast
+line, and the `verify-db` deploy gate that reads `model_evaluation`.

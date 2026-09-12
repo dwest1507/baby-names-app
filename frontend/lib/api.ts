@@ -57,10 +57,19 @@ export interface Validation {
   mae: number
   rmse: number
   mape: number
-  // Model's holdout MAE compared with a naive "no change" baseline that
-  // repeats the last training-observed value: 1 - model_mae / naive_mae.
+  // How much smaller this name's error was than a naive "no change"
+  // baseline's — the last observed value repeated: 1 - model_mae / naive_mae.
   // 0 means no better than assuming nothing changed; negative means worse.
+  //
+  // Unlike the three figures above, it is not this holdout window's: it is
+  // averaged over every five-year window the name was eligible for since
+  // 1995 (26 of them on the 2025 database). One window would mostly measure
+  // that window — the 2021-25 one contains the birth-rate shock — rather than
+  // how predictable the name is.
   skill: number
+  // How many of those windows stand behind `skill`. A name recorded since
+  // 1995 has all 26; a recent arrival has a handful.
+  skill_windows: number
   points: ValidationPoint[]
 }
 

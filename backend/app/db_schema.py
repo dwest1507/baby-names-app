@@ -150,3 +150,46 @@ CREATE TABLE IF NOT EXISTS model_card (
     payload TEXT NOT NULL
 )
 """
+
+
+# What the rolling-origin backtest measured, per popularity tier: the score a
+# build would be deployed on, stored inside the artifact it describes.
+#
+# It lives in the database rather than in a build log because the deploy gate
+# (`scripts/verify_db.py`) is handed an artifact and nothing else — a
+# published file has to be able to say what it scored, months after the run
+# that produced it. `pool_skill` sums the absolute errors before dividing, so
+# it is dominated by the names whose forecasts are most wrong; `med_skill` is
+# the median of the per-name-origin window skills, which is the opposite view
+# and is stored beside it so a model that is excellent on the giants and
+# useless below them cannot pass on one number alone. Both are against the
+# naive "no change" baseline, so 0 means no better than assuming the current
+# share holds, and negative means worse.
+#
+# `origins_evaluated`, `min_origin` and `max_origin` are the span behind the
+# scores (CONTEXT.md, "Backtest Span"). They are here so a backtest that
+# skipped origins cannot present itself as a full one: a score measured over
+# twelve windows and a score measured over twenty-six are not comparable, and
+# the gate has to be able to tell them apart. See
+# docs/adr/0010-a-pooled-model-replaces-per-name-arima.md.
+CREATE_MODEL_EVALUATION_TABLE = """
+CREATE TABLE IF NOT EXISTS model_evaluation (
+    tier TEXT PRIMARY KEY,
+    pool_skill REAL NOT NULL,
+    med_skill REAL NOT NULL,
+    origins_evaluated INTEGER NOT NULL,
+    min_origin INTEGER NOT NULL,
+    max_origin INTEGER NOT NULL
+)
+"""
+
+# The columns `model_evaluation` carries, in the order the batch writes them.
+# Named here for the same reason as `CALIBRATION_COLUMNS`.
+MODEL_EVALUATION_COLUMNS = (
+    "tier",
+    "pool_skill",
+    "med_skill",
+    "origins_evaluated",
+    "min_origin",
+    "max_origin",
+)

@@ -115,6 +115,7 @@ function fullForecast(
       rmse: 0.0000234,
       mape: 12.3,
       skill,
+      skill_windows: 26,
       points: [{ year: 2021, actual: 0.002, predicted: 0.0021 }],
     },
     model: MODEL_CARD,

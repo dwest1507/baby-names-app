@@ -33,8 +33,12 @@ The most recent 5-year window of fully observed records used to evaluate forecas
 _Avoid_: Test set, evaluation slice, holdout window
 
 **Backtest Span**:
-The sequence of annual origin years (from 1995 through the latest year with a complete 5-year holdout) evaluated to measure per-name skill and conformal interval coverage.
+The sequence of annual origin years (from 1995 through the latest year with a complete 5-year holdout) the batch fits and scores, one fit per origin, to measure per-name skill and the per-tier scores the artifact certifies itself with. Conformal interval coverage is measured at the validation holdout alone, against bands calibrated five years before it.
 _Avoid_: Benchmark sweep, rolling test origins, evaluation slice
+
+**Per-Name Skill**:
+A name's average five-year accuracy against the naive "no change" baseline, taken over every origin in the backtest span at which the name was eligible and its five-year outcome fully observed. Reported on the search page beside the number of windows behind it; a name eligible at fewer origins is averaged over fewer windows rather than excluded.
+_Avoid_: Accuracy score, holdout skill, R-squared
 
 **Popularity Tier**:
 One of four rank-based frequency brackets (`top100`, `top1000`, `top5000`, `rest`) defined within an origin year, used to stratify evaluation, acceptance rules, and conformal interval calibration.

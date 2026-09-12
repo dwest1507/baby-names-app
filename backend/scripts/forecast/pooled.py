@@ -30,6 +30,7 @@ dev/build dependency and never reaches the container. See
 docs/adr/0004-forecasts-as-a-build-artifact.md.
 """
 
+import heapq
 import os
 
 import numpy as np
@@ -138,6 +139,14 @@ GLOBAL_STRATUM = ("*", -1)
 # made. High enough that no ordinary forecast touches it, finite enough that a
 # divergence cannot be drawn as a line. See `growth_caps`.
 CAP_QUANTILE = 0.999
+
+# The first origin the rolling backtest scores. Earlier SSA years are thin
+# enough — and far enough from how names move now — that a skill figure
+# averaged over them would describe a different corpus from the one being
+# forecast. The end of the span is not written down at all: it is wherever the
+# data's newest five-year window closes. See CONTEXT.md, "Backtest Span".
+FIRST_BACKTEST_ORIGIN = 1995
+
 
 # LightGBM's histogram building is deterministic only for a fixed thread
 # count, so the batch pins one rather than taking whatever the machine
@@ -327,6 +336,17 @@ def build_rows(series, origins) -> list[dict]:
     return rows
 
 
+def backtest_span(max_observed_year: int) -> range:
+    """The origins whose five-year outcome the database can already check.
+
+    An origin belongs in the span only if every year it forecasts has since
+    been observed, so the newest one it can hold is `H` years back. On the
+    2025 database that is 1995 through 2020 — 26 windows — and on next year's,
+    with nothing here changed, 1995 through 2021.
+    """
+    return range(FIRST_BACKTEST_ORIGIN, max_observed_year - H + 1)
+
+
 def training_origins(origin: int) -> range:
     """The origins a fit made at `origin` is allowed to learn from.
 
@@ -343,6 +363,68 @@ def training_origins(origin: int) -> range:
 def training_rows(series, origin: int) -> list[dict]:
     """Rows whose five-year outcome had already happened by `origin`."""
     return build_rows(series, training_origins(origin))
+
+
+class TrainingWindow:
+    """One advancing window of feature rows, shared by every fit in a batch.
+
+    The batch fits at 27 origins — 26 backtest origins and the production one
+    — and each fit trains on the `TRAIN_WINDOW` origins behind it. Built
+    independently that is over a thousand passes of feature extraction, which
+    is the batch's dominant cost and almost all of it redundant: consecutive
+    origins want training windows that overlap in thirty-nine of forty years.
+
+    So the rows are built once and advanced. `advance` adds whatever origins
+    the new fit needs, and releases everything that has fallen off the back of
+    the window — which is what keeps the footprint of a 26-origin backtest the
+    same as a single fit's, rather than the whole span's. What it holds is the
+    training window plus the handful of newer origins not yet in it: each of
+    those was forecast at, and will be trained on `H` fits later, so releasing
+    it would only mean building it twice.
+
+    It is an optimisation and nothing more: what comes out is the same rows in
+    the same order `training_rows` would have built them in. That is not
+    cosmetic. The fit subsamples rows, so the same rows in a different order
+    fit a different model, and it is `training_rows` that the research parity
+    fixture pins. Stored per origin but handed back grouped by name, which is
+    what the k-way merge below is for: each origin's rows are already in the
+    corpus's name order, so merging them on that key reassembles the original
+    ordering without a sort.
+    """
+
+    def __init__(self, series):
+        self._series = series
+        self._rows: dict[int, list[dict]] = {}
+        self._position = {key: index for index, (key, *_) in enumerate(series)}
+
+    @property
+    def held_origins(self) -> set[int]:
+        """The origins whose rows are in memory right now."""
+        return set(self._rows)
+
+    def advance(self, origin: int) -> tuple[list[dict], list[dict]]:
+        """Move to `origin`: the rows to train on, and the rows to forecast.
+
+        Origins must be visited in increasing order — the window only ever
+        moves forward, and an origin it has already released is gone.
+        """
+        wanted = training_origins(origin)
+        for year in list(self._rows):
+            if year < wanted.start:
+                del self._rows[year]
+        for year in list(wanted) + [origin]:
+            if year not in self._rows:
+                self._rows[year] = build_rows(self._series, [year])
+        # Ties go to the earliest iterable, so passing the origins in
+        # ascending order puts one name's rows in origin order — exactly what
+        # `build_rows` produces from a sorted list of origins.
+        training = list(
+            heapq.merge(
+                *(self._rows[year] for year in wanted),
+                key=lambda row: self._position[row["key"]],
+            )
+        )
+        return training, self._rows[origin]
 
 
 def row_weights(rows) -> np.ndarray:
@@ -409,6 +491,101 @@ def observed_rows(rows) -> list[int]:
     it.
     """
     return [i for i, row in enumerate(rows) if all(v is not None for v in row["actual"])]
+
+
+def window_skills(rows, predicted: np.ndarray):
+    """`(key, tier, skill)` for each row whose five-year outcome is observed.
+
+    `skill` is the standard comparison against the naive forecast — the
+    origin's own share held flat for five years: `1 - model MAE / naive MAE`,
+    so 0 is "no better than assuming nothing changes" and negative is worse.
+    It is computed over the whole five-year path rather than per horizon,
+    which is the unit the search page reports and the unit research scored on.
+
+    The tier is the one the name held *at this origin*, not now, so a name
+    that has since collapsed contributes its errors to the tier it was
+    actually in when the forecast was made.
+    """
+    for i in observed_rows(rows):
+        row = rows[i]
+        actual = np.array(row["actual"], dtype=float)
+        model_error = float(np.abs(actual - predicted[i]).sum())
+        naive_error = float(np.abs(actual - row["last"]).sum())
+        yield (
+            row["key"],
+            popularity_tier(row["rank"]),
+            1 - model_error / naive_error if naive_error > 0 else 0.0,
+            model_error,
+            naive_error,
+        )
+
+
+class BacktestTally:
+    """What the rolling backtest measured, accumulated one origin at a time.
+
+    Two different questions are being asked of the same windows, and they need
+    different arithmetic. A *name* gets the plain average of its own window
+    skills, because each window is one equally-valid measurement of how
+    predictable that name is. A *tier* gets the ratio of summed errors
+    (`pool_skill`), because a tier's score should be dominated by the names
+    whose errors are large rather than by the many small ones — alongside the
+    median window skill (`med_skill`), which is the opposite view and is
+    reported next to it for exactly that reason.
+
+    Only the running sums are kept, not the windows, so the tally costs the
+    same whether the span is one origin or twenty-six.
+    """
+
+    def __init__(self):
+        self._names: dict[str, list[float]] = {}
+        self._tier_errors: dict[str, np.ndarray] = {tier: np.zeros(2) for tier in TIERS}
+        self._tier_skills: dict[str, list[float]] = {tier: [] for tier in TIERS}
+        self._tier_origins: dict[str, set[int]] = {tier: set() for tier in TIERS}
+
+    def add(self, origin: int, rows, predicted: np.ndarray) -> None:
+        """Score one origin's forecasts against what actually happened."""
+        for key, tier, skill, model_error, naive_error in window_skills(rows, predicted):
+            total, count = self._names.get(key, (0.0, 0))
+            self._names[key] = (total + skill, count + 1)
+            self._tier_errors[tier] += (model_error, naive_error)
+            self._tier_skills[tier].append(skill)
+            self._tier_origins[tier].add(origin)
+
+    def skill_per_name(self) -> dict[str, dict]:
+        """Each name's average skill, and how many windows it rests on.
+
+        The window count travels with the figure because it is what qualifies
+        it: a name eligible since 1995 has been measured 26 times and a name
+        first recorded in 2015 has been measured once, and the two numbers do
+        not deserve the same confidence.
+        """
+        return {
+            key: {"skill": total / count, "skill_windows": count}
+            for key, (total, count) in self._names.items()
+        }
+
+    def evaluation(self) -> dict[str, dict]:
+        """Per-tier scores, for the artifact to certify itself with.
+
+        One row per tier that the span actually populated. A tier nothing was
+        scored in is left out rather than published as zero — a deploy gate
+        reading this must be able to tell "measured, and bad" from "never
+        measured". See `app.db_schema.CREATE_MODEL_EVALUATION_TABLE`.
+        """
+        evaluation = {}
+        for tier in TIERS:
+            origins = self._tier_origins[tier]
+            if not origins:
+                continue
+            model_error, naive_error = self._tier_errors[tier]
+            evaluation[tier] = {
+                "pool_skill": float(1 - model_error / naive_error) if naive_error > 0 else 0.0,
+                "med_skill": float(np.median(self._tier_skills[tier])),
+                "origins_evaluated": len(origins),
+                "min_origin": min(origins),
+                "max_origin": max(origins),
+            }
+        return evaluation
 
 
 def growth_caps(rows, quantile: float = CAP_QUANTILE) -> np.ndarray:

@@ -63,6 +63,14 @@ Browser → Next.js (:3000) → /api/[...path]/route.ts (proxy) → FastAPI (:80
   smooths it with an endpoint-preserving moving average over its log steps, and reconciles
   each (sex, horizon) slice onto the origin's total with one multiplicative factor — in that
   order, which is the only order in which the reconciled forecasts still add up.
+  The batch is one pass along the backtest span — every origin from 1995 whose five-year window
+  has closed, 26 of them at 2025 — plus the production origin. Each origin is fitted on the 40
+  closed windows behind it, and `pooled.TrainingWindow` builds each origin's features once and
+  releases them as the span moves past, so 27 fits cost little more extraction than one and memory
+  stays flat (~7 min on the real database). Every origin contributes each name's five-year skill
+  against the naive baseline; `pooled.BacktestTally` averages those into `validation.skill` and
+  sums them per tier into the `model_evaluation` table the deploy gate reads. `validation`'s other
+  figures are still the holdout window's alone.
   It is batch-only: the Dockerfile copies `app/` and not `scripts/`, so `lightgbm`
   and `scikit-learn` are dev-group dependencies and never reach the runtime image.
   `backend/app/services/forecast.py` holds only what the request path uses — the ADR 0001

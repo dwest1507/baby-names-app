@@ -524,3 +524,83 @@ def test_a_volatile_name_is_published_with_a_wider_band(stratified_db):
     narrowest = min(width(key) for key in lurching)
     widest = max(width(key) for key in steady)
     assert narrowest > widest, (widest, narrowest)
+
+
+def _model_evaluation(db_path: str) -> dict:
+    conn = sqlite3.connect(db_path)
+    try:
+        return {
+            tier: {
+                "pool_skill": pool_skill,
+                "med_skill": med_skill,
+                "origins_evaluated": origins,
+                "min_origin": min_origin,
+                "max_origin": max_origin,
+            }
+            for tier, pool_skill, med_skill, origins, min_origin, max_origin in conn.execute(
+                "SELECT tier, pool_skill, med_skill, origins_evaluated, min_origin, max_origin "
+                "FROM model_evaluation"
+            )
+        }
+    finally:
+        conn.close()
+
+
+def test_skill_is_measured_across_every_window_since_1995(built, tmp_path):
+    """The figure on the chart is a property of the name, not of one window.
+
+    Scored on the 2021-25 holdout alone, every name is labelled with how the
+    birth-rate shock went for it, and next year's rebuild relabels it with
+    something else. The batch scores each name at every origin it was eligible
+    at since 1995 and stores the average, so a long-lived name's figure rests
+    on 26 measurements rather than one.
+    """
+    db = _copy(built, tmp_path, "span.db")
+    result = run(db)
+
+    conn = sqlite3.connect(db)
+    try:
+        (newest,) = conn.execute("SELECT MAX(year) FROM names").fetchone()
+    finally:
+        conn.close()
+
+    span = list(range(1995, newest - 4))
+    assert result["backtest"]["origins"] == span
+    assert len(span) == 26
+
+    scored = [
+        json.loads(payload)["validation"]
+        for payload in _forecasts(db).values()
+        if json.loads(payload)["validation"] is not None
+    ]
+    assert scored
+    windows = [validation["skill_windows"] for validation in scored]
+    assert max(windows) == len(span)
+    assert all(1 <= count <= len(span) for count in windows)
+    # A name recorded for less of the span is averaged over less of it rather
+    # than dropped: the counts differ, and none of them is zero.
+    assert len(set(windows)) > 1
+
+
+def test_the_artifact_carries_the_scores_it_would_be_deployed_on(built, tmp_path):
+    """`model_evaluation` is how a built database certifies itself.
+
+    The deploy gate has no access to the run that produced an artifact — only
+    to the artifact. So the measured tier scores travel inside it, beside the
+    forecasts they describe, with the span they were measured over attached so
+    a truncated backtest cannot pass itself off as a full one.
+    """
+    db = _copy(built, tmp_path, "evaluation.db")
+    result = run(db)
+
+    evaluation = _model_evaluation(db)
+
+    assert evaluation == result["backtest"]["evaluation"]
+    assert set(evaluation) <= set(pooled.TIERS)
+    assert evaluation
+    for scores in evaluation.values():
+        assert -1.0 <= scores["pool_skill"] <= 1.0
+        assert -1.0 <= scores["med_skill"] <= 1.0
+        assert scores["origins_evaluated"] == 26
+        assert scores["min_origin"] == 1995
+        assert scores["max_origin"] == result["origins"]["holdout"]

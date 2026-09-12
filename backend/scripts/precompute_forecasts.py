@@ -19,20 +19,36 @@ and reconciliation to the corpus total, in that order — so what is calibrated,
 scored and stored are all the same forecasts the search page draws. See
 `pooled.point_forecasts`.
 
-The batch trains at three origins, all of them in the past relative to what
-they are used for:
+The batch is one pass along the rolling backtest span — every origin from
+1995 whose five-year window has since closed, 26 of them on the 2025 database
+— followed by the production origin. Each origin gets its own fit, trained
+only on windows that had already closed by then, so nothing it is scored on
+was available to it.
 
-* `production` — the newest observed year. Its forecast is what gets served.
-* `holdout` — five years earlier, so its five-year forecast can be scored
-  against years that have since been observed. This is the per-name validation
-  the search page shows.
-* `calibration` — five years earlier again, so the spread of *its* errors can
-  set the published bands without those bands having seen the holdout they are
-  then measured on. The bands are built per `(popularity tier, volatility
-  bin)` and their coverage is measured over the same cells, so the figure in
-  the `calibration` table is out-of-sample *and* describes names like the one
+Four things come out of that pass, and three of the origins in it have a
+second job:
+
+* every origin contributes each eligible name's five-year skill against the
+  naive baseline, and those are averaged into the figure the search page
+  labels the forecast line with. One window would mostly measure the
+  2020-21 birth-rate shock; 26 measure the name. The same windows, summed per
+  popularity tier, are what `model_evaluation` publishes for the deploy gate.
+* `calibration` — ten years back. The spread of *its* errors sets the
+  published bands, without those bands having seen the holdout they are then
+  measured on. They are built per `(popularity tier, volatility bin)` and
+  their coverage is measured over the same cells, so the figure in the
+  `calibration` table is out-of-sample *and* describes names like the one
   being looked at rather than the average name. See
   docs/adr/0011-conformal-bands-keyed-by-strata.md.
+* `holdout` — five years back, and the last origin of the span. Its
+  predicted-against-actual points are the validation table the search page
+  shows.
+* `production` — the newest observed year. Its forecast is what gets served.
+
+The fits share one `pooled.TrainingWindow`, which builds each origin's
+features once and releases them as the span moves past — so 27 fits cost
+little more feature extraction than one, and backtesting 26 origins holds no
+more memory than fitting at a single one.
 
 Usage: uv run python scripts/precompute_forecasts.py [db_path] [--threads N]
 """
@@ -93,6 +109,7 @@ def _ensure_schema(conn) -> None:
     """
     conn.execute(db_schema.CREATE_FORECASTS_TABLE)
     conn.execute(db_schema.CREATE_MODEL_CARD_TABLE)
+    conn.execute(db_schema.CREATE_MODEL_EVALUATION_TABLE)
     for column, kind in (
         ("coverage_hits", "TEXT"),
         ("coverage_n", "TEXT"),
@@ -108,20 +125,24 @@ def _ensure_schema(conn) -> None:
     conn.execute(db_schema.CREATE_CALIBRATION_TABLE)
 
 
-def _fit(series, origin: int, note, threads: int):
+def _fit(window, origin: int, note, threads: int):
     """Train at one origin and forecast every name eligible there.
+
+    The training rows come from the shared `pooled.TrainingWindow` rather than
+    being built here, because 27 fits over a 40-origin window would otherwise
+    extract the same features a thousand times over — feature extraction, not
+    boosting, is what this batch spends its time on.
 
     What comes back is the *published* forecast, not the boosters' raw output:
     `pooled.point_forecasts` caps each path's implied growth, smooths it, and
     scales each (sex, horizon) slice onto the share that sex held at the
-    origin. The band calibration and the holdout scoring therefore measure the
-    same forecasts the search page draws, which they would not if the stack
-    were applied only to the production origin.
+    origin. The band calibration, the skill measured at every backtest origin
+    and the served forecast are therefore all the same object, which they
+    would not be if the stack were applied only to the production origin.
     """
     started = time.monotonic()
-    training = pooled.training_rows(series, origin)
+    training, rows = window.advance(origin)
     models = pooled.train(training, threads=threads)
-    rows = pooled.build_rows(series, [origin])
     predicted = pooled.point_forecasts(models, rows, pooled.growth_caps(training))
     note(
         f"  origin {origin}: {len(training):,} training rows, "
@@ -148,11 +169,12 @@ def _calibration_cell(key: str) -> tuple[float, str, int]:
 def _validation(row, predicted: np.ndarray, bands: dict, stratum) -> dict | None:
     """Score one name's five-year holdout, and record what its bands covered.
 
-    `skill` compares the model's holdout MAE against a naive/persistence
-    baseline — the origin year's share repeated for every holdout year, the
-    standard "no change" forecast. `skill = 1 - model_mae / naive_mae`: 0 means
-    the model does no better than assuming nothing changes, negative means
-    worse.
+    The error figures are this one window's: the five years from the holdout
+    origin, which are what the search page tabulates predicted against actual.
+    `skill` is deliberately *not* among them — a single window's skill is
+    mostly a measurement of that window, and the 2021-25 one contains the
+    birth-rate shock. It is merged in afterwards from `pooled.BacktestTally`,
+    averaged over every origin the name was eligible at since 1995.
 
     `coverage` is this name's contribution to the coverage figure for the cell
     whose band it was given — and `stratum` is the one it was in *at the
@@ -166,8 +188,6 @@ def _validation(row, predicted: np.ndarray, bands: dict, stratum) -> dict | None
 
     actual = np.array(row["actual"], dtype=float)
     errors = actual - predicted
-    mae = float(np.mean(np.abs(errors)))
-    naive_mae = float(np.mean(np.abs(actual - row["last"])))
 
     coverage = {}
     for level in bands:
@@ -182,10 +202,9 @@ def _validation(row, predicted: np.ndarray, bands: dict, stratum) -> dict | None
         coverage[_coverage_key(level, pooled.band_stratum(bands, level, stratum))] = flags
 
     return {
-        "mae": mae,
+        "mae": float(np.mean(np.abs(errors))),
         "rmse": float(np.sqrt(np.mean(errors**2))),
         "mape": float(np.mean(np.abs(errors / np.maximum(actual, 1e-12))) * 100),
-        "skill": float(1 - mae / naive_mae) if naive_mae > 0 else 0.0,
         "points": [
             {"year": int(row["origin"] + i + 1), "actual": float(a), "predicted": float(p)}
             for i, (a, p) in enumerate(zip(actual, predicted, strict=True))
@@ -277,30 +296,57 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
         series = list(pooled.stream_series(conn))
         note(f"  {len(series):,} name/sex series")
 
-        note("Calibrating bands on the errors of an earlier origin...")
-        cal_rows, cal_predicted, _ = _fit(series, calibration_origin, note, threads)
-        # The volatility bin edges are tertiles of the wobble present at this
-        # origin, and they are fixed here and reused at the two later ones, so
-        # that "bin 2" means the same thing whether a name is being
-        # calibrated, scored, or served.
-        edges = pooled.volatility_edges(cal_rows)
-        bands = pooled.strata_bands(cal_rows, cal_predicted, LEVELS, edges)
-        note(
-            f"  {len(bands[str(LEVELS[0])]) - 1} of "
-            f"{len(pooled.TIERS) * pooled.VOLATILITY_BINS} strata measured on their own errors"
-        )
-        del cal_rows, cal_predicted
+        # One pass along the span, each origin fitted only on windows that had
+        # already closed by then, then the production origin. `edges` and
+        # `bands` are set at the calibration origin and `validations` at the
+        # holdout origin, both of which come earlier in the sequence than the
+        # points that read them.
+        span = list(pooled.backtest_span(production_origin))
+        scored = set(span)
+        window = pooled.TrainingWindow(series)
+        tally = pooled.BacktestTally()
+        edges: list[float] = []
+        bands: dict = {}
+        validations: dict = {}
 
-        note("Scoring the five-year holdout...")
-        hold_rows, hold_predicted, _ = _fit(series, holdout_origin, note, threads)
-        validations = {
-            row["key"]: _validation(row, hold_predicted[i], bands, pooled.row_stratum(row, edges))
-            for i, row in enumerate(hold_rows)
-        }
-        del hold_rows, hold_predicted
+        # A database too short to reach 1995 has no span to score; the
+        # calibration and holdout origins are still fitted, and the artifact
+        # simply carries no measured skill rather than a fabricated one.
+        note(
+            f"Backtesting {len(span)} rolling origins"
+            + (f" ({span[0]}:{span[-1]})..." if span else "...")
+        )
+        for origin in sorted(scored | {calibration_origin, holdout_origin}):
+            rows, predicted, _ = _fit(window, origin, note, threads)
+            if origin in scored:
+                tally.add(origin, rows, predicted)
+            if origin == calibration_origin:
+                # The volatility bin edges are tertiles of the wobble present
+                # at this origin, and they are fixed here and reused at every
+                # later one, so that "bin 2" means the same thing whether a
+                # name is being calibrated, scored, or served.
+                edges = pooled.volatility_edges(rows)
+                bands = pooled.strata_bands(rows, predicted, LEVELS, edges)
+                note(
+                    f"  {len(bands[str(LEVELS[0])]) - 1} of "
+                    f"{len(pooled.TIERS) * pooled.VOLATILITY_BINS} "
+                    "strata measured on their own errors"
+                )
+            if origin == holdout_origin:
+                validations = {
+                    row["key"]: _validation(
+                        row, predicted[i], bands, pooled.row_stratum(row, edges)
+                    )
+                    for i, row in enumerate(rows)
+                }
+            del rows, predicted
+
+        skills = tally.skill_per_name()
+        evaluation = tally.evaluation()
+        note(f"  {len(skills):,} names scored over {len(span)} origins")
 
         note("Forecasting the years still to come...")
-        rows, predicted, training_count = _fit(series, production_origin, note, threads)
+        rows, predicted, training_count = _fit(window, production_origin, note, threads)
 
         conn.execute("DELETE FROM forecasts")
         for i, row in enumerate(rows):
@@ -319,7 +365,11 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
                     }
                     for horizon, value in enumerate(predicted[i])
                 ],
-                "validation": validations.get(row["key"]),
+                # The holdout window's own errors, plus the skill measured
+                # across the whole span. A name with a scored holdout has at
+                # least that window in the tally — the holdout origin is the
+                # span's last — so the two always arrive together.
+                "validation": _with_skill(validations.get(row["key"]), skills, row["key"]),
             }
             hits, counts = _split_coverage(stored)
             conn.execute(
@@ -338,6 +388,16 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
             )
 
         calibration = _calibrate(conn)
+
+        conn.execute("DELETE FROM model_evaluation")
+        conn.executemany(
+            "INSERT INTO model_evaluation "
+            f"({', '.join(db_schema.MODEL_EVALUATION_COLUMNS)}) VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (tier, *(scores[column] for column in db_schema.MODEL_EVALUATION_COLUMNS[1:]))
+                for tier, scores in sorted(evaluation.items())
+            ],
+        )
 
         card = pooled.model_card(
             trained_through=production_origin,
@@ -359,10 +419,26 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
             "calibration": calibration_origin,
         },
         "validated": sum(1 for v in validations.values() if v is not None),
+        "backtest": {"origins": span, "evaluation": evaluation, "names": len(skills)},
         "seconds": time.monotonic() - started,
         "calibration": calibration,
         "model": card,
     }
+
+
+def _with_skill(validation: dict | None, skills: dict, key: str) -> dict | None:
+    """Attach the span-wide skill to the holdout figures for one name.
+
+    Kept separate from `_validation` because the two are measured over
+    different things: everything else in the blob describes the holdout
+    window, while `skill` describes the name across every window it was
+    eligible for. `skill_windows` travels with it because it is what qualifies
+    it — 26 measurements and one do not deserve equal weight, and the search
+    page says which it is showing.
+    """
+    if validation is None:
+        return None
+    return {**validation, **skills[key]}
 
 
 def _band_fields(value: float, bands: dict, stratum, horizon: int) -> dict[str, float]:
@@ -407,6 +483,21 @@ def main() -> None:
     print(f"Took:               {result['seconds'] / 60:.1f}m")
     for level, coverage in sorted(result["calibration"].items()):
         print(f"Coverage @ {level:<5}     {coverage:.3f}")
+
+    backtest = result["backtest"]
+    origins = backtest["origins"]
+    print(
+        f"\nBacktest:           {len(origins)} origins "
+        f"({origins[0]}:{origins[-1]}), {backtest['names']:,} names scored"
+    )
+    print(f"{'tier':<12}{'poolSkill':>11}{'medSkill':>10}{'origins':>9}")
+    for tier in pooled.TIERS:
+        scores = backtest["evaluation"].get(tier)
+        if scores is not None:
+            print(
+                f"{tier:<12}{scores['pool_skill']:>11.3f}{scores['med_skill']:>10.3f}"
+                f"{scores['origins_evaluated']:>9}"
+            )
 
 
 if __name__ == "__main__":

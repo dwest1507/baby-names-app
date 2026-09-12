@@ -27,7 +27,9 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app
 
 # Dependencies before app code, so an app-only change doesn't invalidate this
-# (slow: numpy/scipy/statsmodels) layer.
+# (slow: numpy and the FastAPI stack) layer. `--no-dev` is what keeps the ARIMA
+# fitting libraries out: they are dev-group dependencies used only by the offline
+# batch in scripts/forecast/, which this image never copies.
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
@@ -65,7 +67,7 @@ FROM base AS runtime
 # Created before the app-layer COPYs below, and those use --chown, rather
 # than a single `RUN chown -R appuser /app` afterwards: a recursive chown
 # over a directory that already contains the inherited `.venv` layer
-# (numpy/scipy/statsmodels) forces the whole thing to be copied up into a
+# (numpy and the FastAPI stack) forces the whole thing to be copied up into a
 # new layer just to flip ownership bits, nearly doubling the image size.
 # Measured: 907 MB with this approach vs. 1.33 GB with `chown -R`.
 RUN useradd --create-home appuser

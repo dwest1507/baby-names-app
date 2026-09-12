@@ -52,8 +52,13 @@ Browser → Next.js (:3000) → /api/[...path]/route.ts (proxy) → FastAPI (:80
   recursive CTE — see `docs/adr/0008-a-resource-budget-for-generated-sql.md`. Any change to
   the SQL guardrails or the schema description (`SCHEMA_CONTEXT`) should keep the prompt and
   the validator in sync; a test asserts they agree.
-- `backend/app/services/forecast.py` produces the ARIMA forecasts (confidence intervals,
-  holdout validation, residual diagnostics) shown on `/search`.
+- `backend/scripts/forecast/arima.py` produces the ARIMA forecasts (confidence intervals,
+  holdout validation, residual diagnostics) shown on `/search`. It is batch-only: the
+  Dockerfile copies `app/` and not `scripts/`, so `statsmodels` and `scipy` are dev-group
+  dependencies and never reach the runtime image. `backend/app/services/forecast.py` holds
+  only what the request path uses — the ADR 0001 eligibility rule and the response composer,
+  which fits nothing. `research/forecasting/methods.py` imports the batch module directly for
+  its `current` baseline arm.
 - Frontend pages under `frontend/app/` (`/`, `/explore`, `/search`, `/chat`) call the backend
   exclusively through `frontend/lib`'s typed API client, which hits the `/api/*` proxy — never
   fetch the backend URL directly from a component.

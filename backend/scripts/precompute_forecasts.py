@@ -9,9 +9,9 @@ docs/adr/0004-forecasts-as-a-build-artifact.md.
 It reads the whole `names` table once and groups it in memory by (lowercased
 name, sex) rather than querying per name — with ~24,700 eligible pairs in the
 real database, one query per name would pay the lookup cost that many times
-over. Fitting itself is delegated to `app.services.forecast.fit_forecast`,
-the same code the API route used to call at request time, so stored values
-cannot drift from what the code would produce live.
+over. Fitting itself is delegated to `scripts.forecast.arima.fit_forecast`, which
+lives outside the application package precisely so that the fitting libraries
+it needs stay out of the runtime container image.
 
 Runnable against either the sample database (fast, a handful of names) or the
 real built database (~24,700 eligible pairs). On the real database this is a
@@ -63,6 +63,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app import db_schema  # noqa: E402
 from app.services import forecast  # noqa: E402
+from scripts.forecast import arima  # noqa: E402
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 DEFAULT_DB = str(REPO_ROOT / "data" / "names.built.db")
@@ -89,7 +90,7 @@ COMMIT_EVERY = 500
 
 def _fit_one(history: list[dict]) -> dict | None:
     """Fit one name/sex. Runs in a pebble worker, under a hard timeout."""
-    return forecast.fit_forecast(history)
+    return arima.fit_forecast(history)
 
 
 def _split_coverage(stored: dict) -> tuple[dict[str, int], dict[str, int]]:

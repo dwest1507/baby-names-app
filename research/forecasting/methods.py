@@ -20,7 +20,7 @@ from statsmodels.tsa.arima.model import ARIMA  # noqa: E402
 from statsmodels.tsa.forecasting.theta import ThetaModel  # noqa: E402
 from statsmodels.tsa.holtwinters import ExponentialSmoothing, SimpleExpSmoothing  # noqa: E402
 
-from app.services import forecast as appf  # the shipped pipeline  # noqa: E402
+from scripts.forecast import arima as appf  # the shipped pipeline  # noqa: E402
 
 FLOOR = 1e-9
 

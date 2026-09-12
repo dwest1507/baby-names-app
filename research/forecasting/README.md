@@ -4,7 +4,7 @@ A rolling-origin benchmark for the five-year popularity forecast on `/search`. I
 answer one question with numbers instead of intuition: **for the names visitors actually look
 at, does a proposed model beat the one we ship, and does it beat assuming nothing changes?**
 
-Nothing here is imported by the app. `methods.py` imports `backend/app/services/forecast.py`
+Nothing here is imported by the app. `methods.py` imports `backend/scripts/forecast/arima.py`
 so that the "current" arm of every comparison is the shipped pipeline itself, not a
 re-implementation of it.
 

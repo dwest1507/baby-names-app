@@ -435,10 +435,19 @@ def _with_skill(validation: dict | None, skills: dict, key: str) -> dict | None:
     eligible for. `skill_windows` travels with it because it is what qualifies
     it — 26 measurements and one do not deserve equal weight, and the search
     page says which it is showing.
+
+    A name with no measured skill at all carries none: on a database whose
+    newest year is too early for even one five-year window to have closed
+    since 1995, the backtest span is empty and nothing was scored. The holdout
+    figures are still true of that artifact, so they are kept and `skill` is
+    simply absent rather than defaulted to a zero nobody measured. Such a
+    build cannot ship — `verify_db` rejects an artifact whose
+    `model_evaluation` carries no `top100` score — and the page it would serve
+    already renders without the figure.
     """
     if validation is None:
         return None
-    return {**validation, **skills[key]}
+    return {**validation, **skills.get(key, {})}
 
 
 def _band_fields(value: float, bands: dict, stratum, horizon: int) -> dict[str, float]:
@@ -486,10 +495,11 @@ def main() -> None:
 
     backtest = result["backtest"]
     origins = backtest["origins"]
-    print(
-        f"\nBacktest:           {len(origins)} origins "
-        f"({origins[0]}:{origins[-1]}), {backtest['names']:,} names scored"
-    )
+    # An artifact whose newest year is too early for a five-year window to
+    # have closed since 1995 has nothing to report here, rather than a span of
+    # zero origins to print the ends of.
+    span = f" ({origins[0]}:{origins[-1]})" if origins else ""
+    print(f"\nBacktest:           {len(origins)} origins{span}, {backtest['names']:,} names scored")
     print(f"{'tier':<12}{'poolSkill':>11}{'medSkill':>10}{'origins':>9}")
     for tier in pooled.TIERS:
         scores = backtest["evaluation"].get(tier)

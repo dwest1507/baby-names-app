@@ -604,3 +604,65 @@ def test_the_artifact_carries_the_scores_it_would_be_deployed_on(built, tmp_path
         assert scores["origins_evaluated"] == 26
         assert scores["min_origin"] == 1995
         assert scores["max_origin"] == result["origins"]["holdout"]
+
+
+def test_a_database_too_early_to_backtest_still_builds_an_artifact(tmp_path):
+    """No window has closed since 1995, so nothing is scored — and it says so.
+
+    `pooled.backtest_span` reaches back to 1995, so a database whose newest
+    year is earlier than 2000 offers not one five-year window that has closed
+    since. That is a development corpus rather than a deployable one, and the
+    batch's job is to say which: it fits, forecasts and calibrates as usual,
+    the holdout figures are stored because they are true, and `skill` is
+    absent rather than a zero nobody measured. `model_evaluation` is empty for
+    the same reason, which is what makes `verify_db` refuse to ship it.
+    """
+    path = tmp_path / "early.db"
+    _write_corpus(str(path), last_year=1999)
+
+    result = run(str(path))
+
+    assert result["backtest"]["origins"] == []
+    assert result["backtest"]["evaluation"] == {}
+    stored = _forecasts(str(path))
+    assert stored
+    validations = [json.loads(payload)["validation"] for payload in stored.values()]
+    scored = [validation for validation in validations if validation is not None]
+    assert scored, "the holdout window is fully observed, so it is still scored"
+    for validation in scored:
+        assert "mae" in validation
+        assert "skill" not in validation
+        assert "skill_windows" not in validation
+
+
+def test_the_deploy_gate_refuses_an_artifact_nothing_was_scored_on(tmp_path):
+    """The build above is exactly the one that must not reach production."""
+    from scripts.verify_db import VerificationError, verify
+
+    path = tmp_path / "early.db"
+    _write_corpus(str(path), last_year=1999)
+    run(str(path))
+
+    with pytest.raises(VerificationError, match="model_evaluation"):
+        verify(str(path))
+
+
+def _write_corpus(path: str, last_year: int) -> None:
+    """A small corpus of plain wobbling series, ending where the caller says."""
+    import math
+
+    from app import db_schema
+
+    rows = []
+    for i in range(30):
+        name, sex = f"name{i:02d}", "F" if i % 2 else "M"
+        for year in range(last_year - 39, last_year + 1):
+            value = 0.001 * (1.0 + 0.1 * math.sin(i + year / 5))
+            rows.append((name, sex, int(value * 1_000_000), year, value, (i % 20) + 1))
+
+    conn = sqlite3.connect(path)
+    conn.execute(db_schema.CREATE_TABLE)
+    conn.executemany("INSERT INTO names VALUES (?, ?, ?, ?, ?, ?)", rows)
+    db_schema.create_indexes(conn)
+    conn.commit()
+    conn.close()

@@ -165,6 +165,9 @@ export default function SearchPage() {
   const validation = forecast?.validation ?? null
   const model = forecast?.model ?? null
   const stratum = forecast?.stratum ?? null
+  // Measured across the rolling backtest span, so a name the batch never
+  // scored has none — see the `skill` field in lib/api.ts.
+  const skill = validation?.skill
   const forecastBandWidth = forecast ? bandWidth(forecast.forecast) : null
   // The holdout is the window the batch withheld: its first year is the year
   // after the origin the model was trained through.
@@ -343,10 +346,10 @@ export default function SearchPage() {
                   forecast is trusted and how wide its band is.
                 </p>
                 <div className="mt-4">
-                  {validation && (
+                  {skill !== undefined && (
                     <Fact
                       label="Skill vs no change"
-                      value={`${validation.skill >= 0 ? '+' : '\u2212'}${formatPercent(Math.abs(validation.skill), 1)}`}
+                      value={`${skill >= 0 ? '+' : '\u2212'}${formatPercent(Math.abs(skill), 1)}`}
                     />
                   )}
                   {stratum && (
@@ -366,10 +369,10 @@ export default function SearchPage() {
                   {forecastBandWidth && <Fact label="Band width (95%)" value={forecastBandWidth} />}
                   {peak && <Fact label="Against its peak" value={peak} />}
                 </div>
-                {validation && (
+                {skill !== undefined && (
                   <p className="mt-4 text-xs leading-relaxed text-[#8a8f98]">
-                    Skill is averaged over {validation.skill_windows} five-year window
-                    {validation.skill_windows === 1 ? '' : 's'} since 1995 — every window{' '}
+                    Skill is averaged over {validation?.skill_windows} five-year window
+                    {validation?.skill_windows === 1 ? '' : 's'} since 1995 — every window{' '}
                     {displayName} was eligible for — not the most recent one alone.
                   </p>
                 )}
@@ -489,10 +492,10 @@ export default function SearchPage() {
                     A forecast that loses to that baseline is flagged rather
                     than shown with equal confidence. */}
               <div className="mt-4">
-                {validation.skill >= 0 ? (
+                {skill === undefined ? null : skill >= 0 ? (
                   <p className="text-xs leading-relaxed text-emerald-400">
-                    Beats the naive “no change” baseline by {formatPercent(validation.skill, 1)}:
-                    averaged over {validation.skill_windows} five-year window
+                    Beats the naive “no change” baseline by {formatPercent(skill, 1)}: averaged over{' '}
+                    {validation.skill_windows} five-year window
                     {validation.skill_windows === 1 ? '' : 's'} since 1995, this model&apos;s error
                     was that much smaller than simply repeating the last recorded value.
                   </p>
@@ -501,8 +504,8 @@ export default function SearchPage() {
                     This forecast performs worse than simply assuming no change — across{' '}
                     {validation.skill_windows} five-year window
                     {validation.skill_windows === 1 ? '' : 's'} since 1995 its error was{' '}
-                    {formatPercent(Math.abs(validation.skill), 1)} higher than the naive
-                    baseline&apos;s. Treat the forecast and its confidence bands with caution.
+                    {formatPercent(Math.abs(skill), 1)} higher than the naive baseline&apos;s. Treat
+                    the forecast and its confidence bands with caution.
                   </Notice>
                 )}
               </div>

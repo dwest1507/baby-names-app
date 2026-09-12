@@ -66,10 +66,16 @@ export interface Validation {
   // 1995 (26 of them on the 2025 database). One window would mostly measure
   // that window — the 2021-25 one contains the birth-rate shock — rather than
   // how predictable the name is.
-  skill: number
+  //
+  // Absent when the batch measured no window at all: an artifact whose newest
+  // year is too early for one to have closed since 1995 carries the holdout
+  // figures with no skill beside them rather than a zero nobody measured. Such
+  // a build cannot ship (`scripts/verify_db.py` rejects it), so this is a
+  // development artifact, but the page renders one without inventing a figure.
+  skill?: number
   // How many of those windows stand behind `skill`. A name recorded since
   // 1995 has all 26; a recent arrival has a handful.
-  skill_windows: number
+  skill_windows?: number
   points: ValidationPoint[]
 }
 

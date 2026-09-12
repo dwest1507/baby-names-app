@@ -76,9 +76,16 @@ time (ADR 0006). Nothing after this step works without it existing first.
 ```bash
 make build-db               # observed rows only, indexed — data/names.built.db
 make precompute-forecasts   # slow against the real db — expect a long batch run (ADR 0004)
-make verify-db               # confirms the artifact is complete before you ship it
+make verify-db               # confirms the artifact is complete, and that its forecasts
+                            # still clear the acceptance rule, before you ship it
 HF_TOKEN=... make publish-db REPO=yourname/baby-names-db   # needs a write-scoped HF token
 ```
+
+`make verify-db` prints the tier scores it certified. It fails the build if the top 100 scores
+below 0.30 `pool_skill`, if any tier below it fails to beat the naive "no change" baseline, or if
+the backtest behind those scores covered fewer origins than the database supports — see
+[ADR 0010](adr/0010-a-pooled-model-replaces-per-name-arima.md). A failure here means the rebuild
+regressed; publish the previous revision rather than shipping it.
 
 `HF_TOKEN` needs write access even though the resulting dataset is created public — Hugging Face
 requires authentication to write regardless of the resulting repo's visibility. No token is

@@ -7,8 +7,10 @@ const TAGLINE =
   'Search 145 years of Social Security data, chart the trends, and forecast where a name is headed next.'
 
 const STATS = [
-  { num: '1880—2024', label: 'Years of data' },
-  { num: 'ARIMA', label: '5-year forecasts' },
+  { num: '1880—2025', label: 'Years of data' },
+  // The forecast is the pooled gradient-boosted model, not the per-name ARIMA
+  // fit it replaced. See docs/adr/0010-a-pooled-model-replaces-per-name-arima.md.
+  { num: 'Pooled', label: '5-year forecasts' },
   { num: 'AI', label: 'Natural-language chat' },
 ]
 

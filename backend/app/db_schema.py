@@ -61,6 +61,26 @@ def create_indexes(conn) -> None:
 # — a non-random slice, since rows are written in name order — and publish a
 # coverage figure that no longer describes the data. See
 # docs/adr/0007-precompute-batch-runs-in-parallel.md.
+# `tier`/`volatility_bin` are the calibration stratum this name is *served*
+# under — read from its rank and its wobble in the newest observed year — and
+# are what the API joins to `calibration` to report the coverage measured for
+# names like this one. They are stored rather than derived at request time
+# because the volatility bin edges are a property of the batch's calibration
+# origin, and ADR 0004 keeps the request path free of anything computed.
+# The columns `forecasts` carries, in the order the batch and `build_db.py`
+# read and write them. Named here for the same reason as
+# `CALIBRATION_COLUMNS`: a widened table must not leave a copy elsewhere
+# reading a column list that no longer matches.
+FORECASTS_COLUMNS = (
+    "name",
+    "sex",
+    "payload",
+    "coverage_hits",
+    "coverage_n",
+    "tier",
+    "volatility_bin",
+)
+
 CREATE_FORECASTS_TABLE = """
 CREATE TABLE IF NOT EXISTS forecasts (
     name TEXT NOT NULL,
@@ -68,22 +88,108 @@ CREATE TABLE IF NOT EXISTS forecasts (
     payload TEXT NOT NULL,
     coverage_hits TEXT,
     coverage_n TEXT,
+    tier TEXT,
+    volatility_bin INTEGER,
     PRIMARY KEY (name, sex)
 )
 """
 
-# One row per nominal interval level (0.8, 0.95), holding the coverage that
-# level actually achieved across every eligible name's holdout backtest — not
-# a sample. `empirical_coverage` is the fraction of holdout points that fell
-# inside the interval a training-only fit would have published; `n` is the
-# number of holdout points behind that fraction (eligible names x
-# VALIDATION_YEARS). The app must never label a band with `nominal_level` if
-# `empirical_coverage` says otherwise. See
-# docs/adr/0005-truthful-confidence-intervals.md.
+# One row per (nominal level, popularity tier, volatility bin), holding the
+# coverage that level actually achieved for names in that stratum across every
+# eligible name's holdout backtest — not a sample. `empirical_coverage` is the
+# fraction of holdout points that fell inside the interval a training-only fit
+# would have published; `n` is the number of holdout points behind that
+# fraction.
+#
+# It is keyed by the stratum rather than by the level alone because a single
+# population figure conceals exactly the failure it exists to expose: bands
+# can cover 80% of all names while covering 95% of the steady ones and 60% of
+# the jumpy ones, and a visitor reading a jumpy name is shown the 80%. The
+# stratum a row describes is the one measured at the *historical* origin, and
+# `forecasts.tier`/`forecasts.volatility_bin` say which stratum each served
+# name is in. `tier = '*'`, `volatility_bin = -1` is the whole-population row,
+# kept for names whose own stratum was never measured.
+#
+# The app must never label a band with `nominal_level` if `empirical_coverage`
+# says otherwise. See docs/adr/0011-conformal-bands-keyed-by-strata.md, which
+# supersedes docs/adr/0005-truthful-confidence-intervals.md.
 CREATE_CALIBRATION_TABLE = """
 CREATE TABLE IF NOT EXISTS calibration (
-    nominal_level REAL NOT NULL PRIMARY KEY,
+    nominal_level REAL NOT NULL,
+    tier TEXT NOT NULL,
+    volatility_bin INTEGER NOT NULL,
     empirical_coverage REAL NOT NULL,
-    n INTEGER NOT NULL
+    n INTEGER NOT NULL,
+    PRIMARY KEY (nominal_level, tier, volatility_bin)
 )
 """
+
+# The columns `calibration` carries, in the order the batch and `build_db.py`
+# read and write them. Named here so a schema change cannot leave one of them
+# copying a column list that no longer matches.
+CALIBRATION_COLUMNS = (
+    "nominal_level",
+    "tier",
+    "volatility_bin",
+    "empirical_coverage",
+    "n",
+)
+
+
+# The one thing that is true of the forecast model rather than of any one name:
+# what it is, what it was trained on, and which features it reads. One pooled
+# model produces every forecast (see
+# docs/adr/0010-a-pooled-model-replaces-per-name-arima.md), so this is stored
+# once here rather than copied into every row of `forecasts` — the same reason
+# `calibration` is its own table. The single row is pinned by a CHECK so a
+# second batch cannot quietly leave two cards behind for the API to pick
+# between.
+CREATE_MODEL_CARD_TABLE = """
+CREATE TABLE IF NOT EXISTS model_card (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    payload TEXT NOT NULL
+)
+"""
+
+
+# What the rolling-origin backtest measured, per popularity tier: the score a
+# build would be deployed on, stored inside the artifact it describes.
+#
+# It lives in the database rather than in a build log because the deploy gate
+# (`scripts/verify_db.py`) is handed an artifact and nothing else — a
+# published file has to be able to say what it scored, months after the run
+# that produced it. `pool_skill` sums the absolute errors before dividing, so
+# it is dominated by the names whose forecasts are most wrong; `med_skill` is
+# the median of the per-name-origin window skills, which is the opposite view
+# and is stored beside it so a model that is excellent on the giants and
+# useless below them cannot pass on one number alone. Both are against the
+# naive "no change" baseline, so 0 means no better than assuming the current
+# share holds, and negative means worse.
+#
+# `origins_evaluated`, `min_origin` and `max_origin` are the span behind the
+# scores (CONTEXT.md, "Backtest Span"). They are here so a backtest that
+# skipped origins cannot present itself as a full one: a score measured over
+# twelve windows and a score measured over twenty-six are not comparable, and
+# the gate has to be able to tell them apart. See
+# docs/adr/0010-a-pooled-model-replaces-per-name-arima.md.
+CREATE_MODEL_EVALUATION_TABLE = """
+CREATE TABLE IF NOT EXISTS model_evaluation (
+    tier TEXT PRIMARY KEY,
+    pool_skill REAL NOT NULL,
+    med_skill REAL NOT NULL,
+    origins_evaluated INTEGER NOT NULL,
+    min_origin INTEGER NOT NULL,
+    max_origin INTEGER NOT NULL
+)
+"""
+
+# The columns `model_evaluation` carries, in the order the batch writes them.
+# Named here for the same reason as `CALIBRATION_COLUMNS`.
+MODEL_EVALUATION_COLUMNS = (
+    "tier",
+    "pool_skill",
+    "med_skill",
+    "origins_evaluated",
+    "min_origin",
+    "max_origin",
+)

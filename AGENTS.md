@@ -1,8 +1,8 @@
 # Agent guide
 
 Baby Names Explorer: a Next.js frontend + Python FastAPI backend serving 145 years of SSA
-baby name data, with trend charts, ARIMA forecasts, and a Groq-powered natural-language SQL
-chatbot. It was refactored from a single-file Streamlit app into this frontend/backend split.
+baby name data, with trend charts, pooled-model popularity forecasts, and a Groq-powered
+natural-language SQL chatbot. It was refactored from a single-file Streamlit app into this frontend/backend split.
 
 ## Commands
 
@@ -52,8 +52,63 @@ Browser → Next.js (:3000) → /api/[...path]/route.ts (proxy) → FastAPI (:80
   recursive CTE — see `docs/adr/0008-a-resource-budget-for-generated-sql.md`. Any change to
   the SQL guardrails or the schema description (`SCHEMA_CONTEXT`) should keep the prompt and
   the validator in sync; a test asserts they agree.
-- `backend/app/services/forecast.py` produces the ARIMA forecasts (confidence intervals,
-  holdout validation, residual diagnostics) shown on `/search`.
+- `backend/scripts/forecast/pooled.py` produces the forecasts shown on `/search`: one
+  LightGBM booster per horizon, trained across every name's history at once and predicting
+  every eligible name in one pass, from origin `MAX(year)` out five years. It replaced a
+  per-name ARIMA fit that scored negative skill outside the top 1000 — see
+  `docs/adr/0010-a-pooled-model-replaces-per-name-arima.md`. Feature extraction streams
+  straight off `idx_names_name_sex_year` (ADR 0009) with no sort file and no intermediate
+  artifact. Training is bounded to the most recent 40 origins, and what the boosters produce
+  is not yet what the site draws: `pooled.point_forecasts` caps each path's implied growth,
+  smooths it with an endpoint-preserving moving average over its log steps, and reconciles
+  each (sex, horizon) slice onto the origin's total with one multiplicative factor — in that
+  order, which is the only order in which the reconciled forecasts still add up.
+  The batch is one pass along the backtest span — every origin from 1995 whose five-year window
+  has closed, 26 of them at 2025 — plus the production origin. Each origin is fitted on the 40
+  closed windows behind it, and `pooled.TrainingWindow` builds each origin's features once and
+  releases them as the span moves past, so 27 fits cost little more extraction than one and memory
+  stays flat (~7 min on the real database). Every origin contributes each name's five-year skill
+  against the naive baseline; `pooled.BacktestTally` averages those into `validation.skill` and
+  sums them per tier into the `model_evaluation` table the deploy gate reads. `validation`'s other
+  figures are still the holdout window's alone.
+  `backend/scripts/verify_db.py` (`make verify-db`) is that gate: beyond the structural checks it
+  reads `model_evaluation` and refuses a build whose top 100 falls below `MIN_TOP_TIER_SKILL`,
+  whose lower tiers fail to beat the naive baseline, or whose span is shorter than
+  `pooled.backtest_span` of the artifact's own newest year. Changing the backtest span changes what
+  the gate expects; nothing there is hard-coded to 26.
+  It is batch-only: the Dockerfile copies `app/` and not `scripts/`, so `lightgbm`
+  and `scikit-learn` are dev-group dependencies and never reach the runtime image.
+  `backend/app/services/forecast.py` holds only what the request path uses — the ADR 0001
+  eligibility rule and the response composer, which fits nothing.
+- The shaded bands are conformal, not model-derived: `pooled.strata_bands` takes the quantiles
+  of the fit's own five-year log residuals within each `(popularity tier, volatility bin)`
+  stratum, so a volatile name gets a wider band than a steady one at the same rank. A stratum
+  with fewer than `MIN_STRATUM_ROWS` observed outcomes uses the whole population's band instead,
+  and its holdout is counted into the population's coverage rather than publishing an estimate
+  of its own — `pooled.band_stratum` is the one place that decides which. The `calibration` table
+  is keyed by `(nominal_level, tier, volatility_bin)`, `forecasts.tier`/`volatility_bin` record
+  the stratum each name is served under, and the API returns only the row matching it, so the
+  chart labels a band with the coverage measured for names like this one. Tier is read at the
+  row's own origin (`stream_series` carries a rank per year), which is what makes a historical
+  backtest tier by historical ranks and serving tier by the newest year's. See
+  `docs/adr/0011-conformal-bands-keyed-by-strata.md`. The response also carries the name's *own*
+  stratum under `stratum`, which is a different fact from the one `calibration` describes: a name
+  whose cell was too thin to earn a band is served the population's and its calibration row then
+  says `*`. `/search` labels the name from `stratum` and the band from `calibration`.
+- `/search` presents the forecast as a band with a line through it, not a trajectory: the shaded
+  interval is the dense object, the central line is thin, dimmed and dotless, and its legend
+  entry carries this name's measured skill against no-change. Beside the global model card sits a
+  per-name panel — skill, popularity tier, volatility bin, band width, position against the
+  name's own peak — where the ARIMA order and residual p-values used to be. Band width and peak
+  position are derived on the page from the forecast points and history it already has; tier and
+  bin are not derivable and come from `stratum`.
+- `backend/scripts/forecast/arima.py` is the frozen previous pipeline. Nothing in the batch
+  calls it; `research/forecasting/methods.py` imports it so rounds 1-6 of the benchmark stay
+  reproducible, which is why `statsmodels` and `scipy` remain dev-group dependencies.
+- The pooled port is pinned numerically: `research/forecasting/make_parity_fixture.py`
+  regenerates `backend/tests/fixtures/pooled_parity.json` from the research modules, and
+  `backend/tests/test_forecast_pooled.py` demands the shipped code reproduce it. Regenerate it
+  deliberately, only when the model is meant to change.
 - Frontend pages under `frontend/app/` (`/`, `/explore`, `/search`, `/chat`) call the backend
   exclusively through `frontend/lib`'s typed API client, which hits the `/api/*` proxy — never
   fetch the backend URL directly from a component.

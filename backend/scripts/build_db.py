@@ -187,39 +187,35 @@ def build(
 
         conn.execute(db_schema.CREATE_FORECASTS_TABLE)
         conn.execute(db_schema.CREATE_CALIBRATION_TABLE)
+        conn.execute(db_schema.CREATE_MODEL_EVALUATION_TABLE)
 
         forecasts_preserved = 0
         # Preserve forecasts and calibration tables from existing database artifact if present
         if output_path.exists():
             db_uri = f"file:{output_path.resolve()}?mode=ro"
             with sqlite3.connect(db_uri, uri=True) as existing_conn:
-                tables = {
-                    row[0]
-                    for row in existing_conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type = 'table'"
-                    ).fetchall()
-                }
-                if "forecasts" in tables:
-                    f_rows = existing_conn.execute(
-                        "SELECT name, sex, payload, coverage_hits, coverage_n FROM forecasts"
-                    ).fetchall()
-                    conn.executemany(
-                        "INSERT OR REPLACE INTO forecasts "
-                        "(name, sex, payload, coverage_hits, coverage_n) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        f_rows,
-                    )
-                    forecasts_preserved = len(f_rows)
-
-                if "calibration" in tables:
-                    c_rows = existing_conn.execute(
-                        "SELECT nominal_level, empirical_coverage, n FROM calibration"
-                    ).fetchall()
-                    conn.executemany(
-                        "INSERT OR REPLACE INTO calibration (nominal_level, empirical_coverage, n) "
-                        "VALUES (?, ?, ?)",
-                        c_rows,
-                    )
+                forecasts_preserved = _preserve(
+                    existing_conn, conn, "forecasts", db_schema.FORECASTS_COLUMNS, required=3
+                )
+                _preserve(
+                    existing_conn,
+                    conn,
+                    "calibration",
+                    db_schema.CALIBRATION_COLUMNS,
+                    required=len(db_schema.CALIBRATION_COLUMNS),
+                )
+                # The scores the deploy gate reads have to survive a `names`
+                # rebuild for the same reason the forecasts they describe do:
+                # otherwise reingesting the source would leave an artifact
+                # that still carries forecasts but can no longer say what they
+                # scored, and `verify-db` would reject it.
+                _preserve(
+                    existing_conn,
+                    conn,
+                    "model_evaluation",
+                    db_schema.MODEL_EVALUATION_COLUMNS,
+                    required=len(db_schema.MODEL_EVALUATION_COLUMNS),
+                )
 
         conn.execute("ANALYZE")
         conn.commit()
@@ -243,6 +239,31 @@ def build(
         "bytes": output_path.stat().st_size,
         "seconds": time.monotonic() - started,
     }
+
+
+def _preserve(existing_conn, conn, table: str, columns, required: int) -> int:
+    """Copy `table` forward from the artifact being rebuilt, where it still fits.
+
+    `build_db` rebuilds `names` only; forecasts and their calibration are a
+    separate, much slower build step (ADR 0004), so rerunning the ingestion
+    must not silently discard them. But the artifact on disk can predate a
+    schema change, so only the columns the old table still has in common with
+    the current schema are copied — and if it is missing one of the first
+    `required` of them, the table is left empty rather than filled with rows
+    that assert something nobody measured. `make precompute-forecasts`
+    rebuilds what is skipped.
+    """
+    have = {row[1] for row in existing_conn.execute(f"PRAGMA table_info({table})")}
+    if not have or not set(columns[:required]) <= have:
+        return 0
+    shared = [column for column in columns if column in have]
+    rows = existing_conn.execute(f"SELECT {', '.join(shared)} FROM {table}").fetchall()
+    conn.executemany(
+        f"INSERT OR REPLACE INTO {table} ({', '.join(shared)}) "
+        f"VALUES ({', '.join('?' * len(shared))})",
+        rows,
+    )
+    return len(rows)
 
 
 def main() -> None:

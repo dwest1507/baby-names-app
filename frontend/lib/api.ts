@@ -57,48 +57,75 @@ export interface Validation {
   mae: number
   rmse: number
   mape: number
-  // Model's holdout MAE compared with a naive "no change" baseline that
-  // repeats the last training-observed value: 1 - model_mae / naive_mae.
+  // How much smaller this name's error was than a naive "no change"
+  // baseline's — the last observed value repeated: 1 - model_mae / naive_mae.
   // 0 means no better than assuming nothing changed; negative means worse.
-  skill: number
+  //
+  // Unlike the three figures above, it is not this holdout window's: it is
+  // averaged over every five-year window the name was eligible for since
+  // 1995 (26 of them on the 2025 database). One window would mostly measure
+  // that window — the 2021-25 one contains the birth-rate shock — rather than
+  // how predictable the name is.
+  //
+  // Absent when the batch measured no window at all: an artifact whose newest
+  // year is too early for one to have closed since 1995 carries the holdout
+  // figures with no skill beside them rather than a zero nobody measured. Such
+  // a build cannot ship (`scripts/verify_db.py` rejects it), so this is a
+  // development artifact, but the page renders one without inventing a figure.
+  skill?: number
+  // How many of those windows stand behind `skill`. A name recorded since
+  // 1995 has all 26; a recent arrival has a handful.
+  skill_windows?: number
   points: ValidationPoint[]
 }
 
 export interface CalibrationLevel {
   nominal: number
+  // The stratum this coverage was measured over: the popularity tier and
+  // volatility bin of the names it describes. `'*'` / -1 is the
+  // whole-population fallback, served only for a name whose own stratum the
+  // backtest never populated.
+  tier: string
+  volatility_bin: number
   empirical_coverage: number
   n: number
 }
 
-// Keyed by nominal level as a string ("0.8", "0.95"). Measured across every
-// eligible name's holdout backtest by the precompute batch — see
-// docs/adr/0005-truthful-confidence-intervals.md. The shaded bands must be
+// Keyed by nominal level as a string ("0.8", "0.95"). Each row is the coverage
+// the batch measured for names in *this* name's stratum, across every eligible
+// name's holdout backtest — not a population average, which is exactly what
+// conceals a badly calibrated tail. See
+// docs/adr/0011-conformal-bands-keyed-by-strata.md. The shaded bands must be
 // labelled with `empirical_coverage`, not `nominal`.
 export type Calibration = Record<string, CalibrationLevel>
 
-export interface DiagnosticTest {
-  p_value: number
-  is_white_noise?: boolean
-  is_normal?: boolean
-  is_homoscedastic?: boolean
+// One pooled model produces every name's forecast, so this describes the
+// batch rather than the name being looked at: there is no per-name fit left to
+// report an order or residual diagnostics for. See
+// docs/adr/0010-a-pooled-model-replaces-per-name-arima.md.
+export interface Model {
+  model_name: string
+  model_class: string
+  // The quantity the model predicts, as an expression.
+  target: string
+  features: string[]
+  horizons: number
+  trained_through: number
+  training_origins: number
+  training_rows: number
+  sample_weight: string
+  seed: number
 }
 
-export interface Model {
-  order: number[]
-  aic: number
-  bic: number
-  log_applied: boolean
-  diagnostics: {
-    ljung_box: { p_value: number; is_white_noise: boolean }
-    normality: { p_value: number; is_normal: boolean }
-    heteroscedasticity: { p_value: number; is_homoscedastic: boolean }
-    overall_quality: boolean
-  }
-  stationarity: {
-    is_stationary: boolean
-    adf_pvalue: number
-    kpss_pvalue: number
-  }
+// The name's *own* calibration stratum: the popularity tier it held at the
+// forecast origin and the volatility bin its recent wobble puts it in. Not
+// the stratum `calibration` describes — a name whose own cell was too thin to
+// earn a band of its own is served the whole population's, and the
+// calibration row then names `*`. The two are different facts and the page
+// reports both. Null on an artifact published before the columns existed.
+export interface Stratum {
+  tier: string
+  volatility_bin: number
 }
 
 export interface ForecastPoint {
@@ -118,6 +145,7 @@ export interface ForecastPayload {
   validation: Validation | null
   model: Model | null
   calibration: Calibration | null
+  stratum: Stratum | null
 }
 
 export interface ChatEntry {

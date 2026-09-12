@@ -4,9 +4,15 @@ A rolling-origin benchmark for the five-year popularity forecast on `/search`. I
 answer one question with numbers instead of intuition: **for the names visitors actually look
 at, does a proposed model beat the one we ship, and does it beat assuming nothing changes?**
 
-Nothing here is imported by the app. `methods.py` imports `backend/app/services/forecast.py`
-so that the "current" arm of every comparison is the shipped pipeline itself, not a
-re-implementation of it.
+Nothing here is imported by the app; the dependency runs the other way. `methods.py` imports
+`backend/scripts/forecast/arima.py` rather than re-implementing it, so the `current` arm is the
+pipeline itself.
+
+Since round 6 that arm is a **historical baseline, not what the site serves**: the pooled model
+of `pooled3.py` shipped as `backend/scripts/forecast/pooled.py`
+(`docs/adr/0010-a-pooled-model-replaces-per-name-arima.md`), and `arima.py` is frozen so rounds
+1-6 stay reproducible. Re-pointing `current` at the pooled pipeline is issue #55; until then,
+benchmark against `gbt_pop` rather than `current` to compare with what is deployed.
 
 ## Running it
 
@@ -40,7 +46,7 @@ $PY conformal.py  .work/all.jsonl --method combo_pooled_ens --cal-origins 2014 -
 | `data.py` | paths, the popularity tiers every table breaks down on, and the stratified sample |
 | `cohorts.py` | per-year share held by each ending / initial-letter / sex cohort, leave-one-out |
 | `extract_series.py` | pulls each name/sex's observed `(year, popularity_percent)` series out of the DB |
-| `methods.py` | the candidate forecasters, including `current` — the shipped ARIMA pipeline |
+| `methods.py` | the candidate forecasters, including `current` — the per-name ARIMA pipeline, which the site shipped through round 6 and which is now kept frozen so those rounds stay reproducible |
 | `backtest.py` | rolling-origin evaluation; fits each base method once per name-origin and derives the shrunk/ensemble variants from those forecasts |
 | `pooled.py` | the global model: one ridge per horizon, learned across all names, in log space |
 | `pooled2.py` | the same, with level interactions, cohort features, popularity-weighted fitting and a tuned penalty |
@@ -58,6 +64,7 @@ $PY conformal.py  .work/all.jsonl --method combo_pooled_ens --cal-origins 2014 -
 | `intervals.py` | scores band constructions against each other — residual, direct-quantile and conformalised — on interval score, not coverage alone |
 | `reconcile.py` | makes the per-name forecasts add up to the share total they have to sum to, and scores what that costs or buys |
 | `smooth.py` | how jagged the five-year path is, and what smoothing it costs on accuracy |
+| `make_parity_fixture.py` | runs generated series through these modules and pins what they produced into `backend/tests/fixtures/pooled_parity.json`, so the shipped port cannot drift from the code that measured it |
 
 ## Reading the metrics
 

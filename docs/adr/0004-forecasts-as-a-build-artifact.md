@@ -109,6 +109,24 @@ sex. The request path performs a lookup and fits nothing.**
   these apart is what makes the "reuse the app's own code" requirement checkable at all — the
   batch and the route now provably run the same fitting function because there is only one.
 
+## Amendment: the fitting code moved out of the application package
+
+The consequence above — "`statsmodels` is no longer imported on the request path in any live
+code path" — was true of the running code but not of the package layout: `fit_forecast` and the
+ARIMA internals still lived in `app/services/forecast.py`, and their module-scope imports were
+the only reason `statsmodels` and `scipy` were runtime dependencies at all. The pipeline has
+since moved to `backend/scripts/forecast/arima.py`, alongside the batch that is its only caller
+and outside the `app/` tree the Dockerfile copies. `app/services/forecast.py` retains the two
+request-path pieces, `is_eligible` and `build_response`, and imports nothing that fits.
+
+This changes no decision here, only where the code sits. What it buys is that the property is
+now structural rather than behavioural: the fitting libraries are dev-group dependencies, absent
+from an image built with `uv sync --frozen --no-dev`, so the request path cannot fit a model
+even by mistake. `test_runtime_dependencies.py` asserts this the way the container experiences
+it — importing `app.main` with `statsmodels` and `scipy` blocked from the import system — which
+is a stronger check than the monkeypatch guard described above, and that guard is retained
+(re-pointed at the batch module) rather than replaced.
+
 ## Related
 
 - Parent PRD: dwest1507/baby-names-app#5

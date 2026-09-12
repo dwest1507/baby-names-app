@@ -1,7 +1,7 @@
 # Baby Names Explorer API
 
 FastAPI backend serving the baby names dataset: top-name queries, per-name
-history, ARIMA popularity forecasts, and a Groq-powered natural-language
+history, precomputed popularity forecasts, and a Groq-powered natural-language
 chatbot that translates questions into guarded SQL.
 
 ```bash

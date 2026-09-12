@@ -4,7 +4,14 @@ Date: 2026-08-31
 
 ## Status
 
-Accepted
+Superseded by [11. Conformal bands, keyed by popularity tier and volatility bin](0011-conformal-bands-keyed-by-strata.md).
+
+The relabelling this ADR chose over recalibration was the right call on 45 holdout points, and it
+is no longer the right call on ~123,000: ADR 0011 recalibrates the bands empirically, per
+popularity tier and volatility bin, and reports each name its own stratum's measured coverage
+instead of a population average. The parts of this ADR that were not about interval width — skill
+against the persistence baseline, flagging rather than suppressing a forecast that loses to it,
+and rendering validation figures in fixed-decimal percentage points — carry over unchanged.
 
 ## Context
 

@@ -20,6 +20,11 @@ export default function SexToggle({ value, onChange }: SexToggleProps) {
       {OPTIONS.map((option) => (
         <button
           key={option.value}
+          // A bare <button> inside a form is a submit button, and pressing
+          // Enter in a text field activates the form's *first* submit button
+          // — which here is "Female". On /search that silently flipped the
+          // sex and searched the other one. These choose, they do not submit.
+          type="button"
           role="radio"
           aria-checked={value === option.value}
           onClick={() => onChange(option.value)}

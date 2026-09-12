@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app import db_schema  # noqa: E402
 
-YEARS = range(1960, 2025)
+YEARS = range(1960, 2026)
 
 # Below this share of births the source suppresses the count for privacy, so
 # the real data has no row at all for that name/sex/year.
@@ -45,6 +45,12 @@ PROFILES = [
     # Recent arrival: present in the final year but with fewer than ten
     # recorded years, so it fails the minimum-history guard.
     ("Mateo", "M", 2024, 0.004, 3),
+    # Eligible, but not for long: recorded from the mid-2000s, so it clears
+    # the ten-year minimum only partway through the backtest span and is
+    # scored on a handful of windows where the older names are scored on all
+    # 26. Most real names are shaped like this, and without one here the
+    # sample would let a batch that silently dropped them pass.
+    ("Aria", "F", 2022, 0.0025, 7),
 ]
 
 

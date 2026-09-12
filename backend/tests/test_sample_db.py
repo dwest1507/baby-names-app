@@ -119,22 +119,30 @@ def test_forecasts_table_holds_only_eligible_names_and_excludes_history(sample_d
 
 def test_batch_aggregates_holdout_interval_coverage_across_every_eligible_name(sample_db):
     """The calibration table records empirical coverage measured across the
-    whole batch's holdout backtest, not a single name's 5 holdout points. See
-    docs/adr/0005-truthful-confidence-intervals.md.
+    whole batch's holdout backtest, not a single name's 5 holdout points, and
+    it records it per `(popularity tier, volatility bin)` rather than as one
+    population figure. See docs/adr/0011-conformal-bands-keyed-by-strata.md.
     """
     conn = sqlite3.connect(sample_db)
     try:
         rows = {
-            level: (coverage, n)
-            for level, coverage, n in conn.execute(
-                "SELECT nominal_level, empirical_coverage, n FROM calibration"
+            (level, tier, bin_index): (coverage, n)
+            for level, tier, bin_index, coverage, n in conn.execute(
+                "SELECT nominal_level, tier, volatility_bin, empirical_coverage, n FROM calibration"
             )
         }
     finally:
         conn.close()
 
-    assert set(rows) == {0.8, 0.95}
-    for _level, (coverage, n) in rows.items():
+    assert {level for level, _, _ in rows} == {0.8, 0.95}
+    # Nine eligible names cannot fill a single stratum to
+    # `pooled.MIN_STRATUM_ROWS`, so every band here correctly falls back to
+    # the population's and every holdout point is counted into that one cell.
+    # A sample this size measuring a per-stratum coverage figure would be the
+    # defect, not the feature.
+    for level in (0.8, 0.95):
+        assert {(tier, b) for lv, tier, b in rows if lv == level} == {("*", -1)}
+    for coverage, n in rows.values():
         assert 0.0 <= coverage <= 1.0
         # More than one name's holdout contributed: each eligible name has
         # exactly VALIDATION_YEARS (5) holdout points.
@@ -176,3 +184,38 @@ def test_precompute_batch_reads_the_names_table_once_rather_than_per_name(tmp_pa
     # One query reads the whole table, one finds the latest year — never one
     # per name/sex pair, even though the sample data has 11 name profiles.
     assert len(reads_of_names) <= 2, reads_of_names
+
+
+def test_sample_database_runs_through_2025(sample_db):
+    """The fixture has to exercise production's temporal boundary.
+
+    Production forecasts from origin 2025 (the newest observed year) out to
+    2026-2030. A sample that stops at 2024 would let a forecast land on 2025
+    — a year that has already happened — without any test noticing.
+    """
+    conn = sqlite3.connect(sample_db)
+    try:
+        (newest,) = conn.execute("SELECT MAX(year) FROM names").fetchone()
+    finally:
+        conn.close()
+    assert newest == 2025
+
+
+def test_the_out_of_use_and_short_history_names_still_play_their_parts(sample_db):
+    """Both ineligibility explanations need a name that produces them at 2025.
+
+    Debra stands for "no longer in use" and Mateo for "not enough history".
+    Moving the sample's final year forward is exactly the change that could
+    quietly promote either into eligibility and leave the two explanations
+    untested.
+    """
+    conn = sqlite3.connect(sample_db)
+    try:
+        (newest,) = conn.execute("SELECT MAX(year) FROM names").fetchone()
+        debra = [y for (y,) in conn.execute("SELECT year FROM names WHERE name = 'Debra'")]
+        mateo = [y for (y,) in conn.execute("SELECT year FROM names WHERE name = 'Mateo'")]
+    finally:
+        conn.close()
+
+    assert len(debra) >= 10 and max(debra) < newest
+    assert max(mateo) == newest and len(mateo) < 10

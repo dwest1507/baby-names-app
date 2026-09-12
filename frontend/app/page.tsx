@@ -18,7 +18,7 @@ const FEATURES = [
     tag: 'FORECASTS',
     title: 'Name Search',
     description:
-      'Look up any name for its full popularity history, current rank, and a 5-year ARIMA forecast with confidence intervals and holdout validation.',
+      'Look up any name for its full popularity history, current rank, and a 5-year pooled-model forecast with conformal uncertainty bands and holdout validation.',
   },
   {
     href: '/chat',

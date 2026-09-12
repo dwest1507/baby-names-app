@@ -89,7 +89,9 @@ cache miss can never become a network call on the request path.**
 - **The verification command (`backend/scripts/verify_db.py`, `make verify-db`) is the last gate
   before an artifact is published or shipped.** It reuses `app.database.describe_db_problem` for
   the same missing-file/LFS-pointer/non-database checks the backend itself makes, then confirms
-  both `names` and `forecasts` are present and non-empty. Its reason for existing rather than
+  `names`, `forecasts` and `model_evaluation` are present and non-empty — and, since ADR 0010,
+  enforces the forecasting programme's acceptance rule against the scores `model_evaluation`
+  carries. Its reason for existing rather than
   trusting `build_db.py`/`precompute_forecasts.py` to have worked is stated plainly in the parent
   issue: a deploy with a missing or truncated artifact builds and starts happily — nothing
   touches sqlite until the first request — and then cannot answer anything. Verification catches

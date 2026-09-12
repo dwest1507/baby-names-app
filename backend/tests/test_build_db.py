@@ -1,10 +1,15 @@
 """Tests for scripts/build_db.py: the automated SSA data ingestion pipeline."""
 
 import sqlite3
+import sys
 import zipfile
 from pathlib import Path
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from app import db_schema  # noqa: E402
 
 
 @pytest.fixture
@@ -118,11 +123,8 @@ def test_build_db_preserves_existing_forecasts(sample_ssa_zip: Path, tmp_path: P
         "INSERT INTO forecasts VALUES "
         "('Emma', 'F', '{\"test\": 123}', '{\"0.8\": 4}', '{\"0.8\": 5}')"
     )
-    conn.execute(
-        "CREATE TABLE calibration (nominal_level REAL NOT NULL PRIMARY KEY, "
-        "empirical_coverage REAL NOT NULL, n INTEGER NOT NULL)"
-    )
-    conn.execute("INSERT INTO calibration VALUES (0.8, 0.81, 100)")
+    conn.execute(db_schema.CREATE_CALIBRATION_TABLE)
+    conn.execute("INSERT INTO calibration VALUES (0.8, 'top100', 1, 0.81, 100)")
     conn.commit()
     conn.close()
 
@@ -141,9 +143,10 @@ def test_build_db_preserves_existing_forecasts(sample_ssa_zip: Path, tmp_path: P
         assert row[1] == "F"
         assert '{"test": 123}' in row[2]
 
-        # Check calibration row preserved
+        # Check calibration row preserved, stratum and all
         cal = conn.execute(
-            "SELECT empirical_coverage, n FROM calibration WHERE nominal_level = 0.8"
+            "SELECT empirical_coverage, n FROM calibration "
+            "WHERE nominal_level = 0.8 AND tier = 'top100' AND volatility_bin = 1"
         ).fetchone()
         assert cal is not None
         assert cal[0] == 0.81
@@ -154,6 +157,43 @@ def test_build_db_preserves_existing_forecasts(sample_ssa_zip: Path, tmp_path: P
         assert name_count == 7
     finally:
         conn.close()
+
+
+def test_build_db_drops_a_calibration_table_the_batch_can_no_longer_read(
+    sample_ssa_zip: Path, tmp_path: Path
+):
+    """Coverage measured before it was measured per stratum cannot be carried over.
+
+    A pre-#44 artifact's `calibration` rows are keyed by nominal level alone,
+    so there is no stratum to file them under and no honest way to guess one —
+    a row that claimed to describe `top100` would be asserting something
+    nobody measured. They are dropped, and the next
+    `make precompute-forecasts` rebuilds the table from `forecasts`, which is
+    where the per-name coverage that feeds it actually lives.
+    """
+    from scripts.build_db import build
+
+    out_db = tmp_path / "names.built.db"
+    conn = sqlite3.connect(str(out_db))
+    conn.execute(
+        "CREATE TABLE calibration (nominal_level REAL NOT NULL PRIMARY KEY, "
+        "empirical_coverage REAL NOT NULL, n INTEGER NOT NULL)"
+    )
+    conn.execute("INSERT INTO calibration VALUES (0.8, 0.44, 45)")
+    conn.commit()
+    conn.close()
+
+    build(source=sample_ssa_zip, output=out_db)
+
+    conn = sqlite3.connect(str(out_db))
+    try:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(calibration)")}
+        (remaining,) = conn.execute("SELECT COUNT(*) FROM calibration").fetchone()
+    finally:
+        conn.close()
+
+    assert columns == set(db_schema.CALIBRATION_COLUMNS)
+    assert remaining == 0
 
 
 def test_build_db_raises_if_source_missing_and_download_disabled(tmp_path: Path):

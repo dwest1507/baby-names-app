@@ -214,16 +214,17 @@ export default function TrendChart({ payload }: TrendChartProps) {
           />
           {hasForecast && (
             /* The band is what the chart is really saying; the central line
-               is one path through it. Drawn thinner and dimmer than the
-               history it continues, and without the point markers that would
-               read as five measured values. See
+               is one path through it. Drawn thinner than the history it
+               continues and without the point markers that would read as
+               five measured values — but not dimmer than its own fill, or it
+               disappears into the band it sits in. See
                docs/adr/0011-conformal-bands-keyed-by-strata.md. */
             <Line
               dataKey="forecast"
               name={forecastLabel}
               stroke={CHART_COLORS.forecast}
               strokeWidth={1.25}
-              strokeOpacity={0.65}
+              strokeOpacity={0.92}
               strokeDasharray="6 4"
               dot={false}
               activeDot={{ r: 3 }}

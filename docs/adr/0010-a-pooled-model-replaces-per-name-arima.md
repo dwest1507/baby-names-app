@@ -253,5 +253,15 @@ else moves:
   so reingesting the source cannot leave an artifact that still carries forecasts but can no longer
   say what they scored.
 
-What is deliberately not done here, and is tracked separately: the visual demotion of the forecast
-line, and the `verify-db` deploy gate that reads `model_evaluation`.
+- **The acceptance rule is enforced, not remembered.** `scripts/verify_db.py` — already the last
+  gate before an artifact is published or baked into an image — reads `model_evaluation` out of the
+  artifact handed to it and refuses a build whose top 100 scores below 0.30 `pool_skill`, whose
+  tiers below the top 100 fail to beat the naive baseline, or whose scores rest on a shorter span
+  than the database supports. That last check derives the span it expects from the artifact's own
+  newest observed year (`pooled.backtest_span`), so a 2026 rebuild is held to twenty-seven origins
+  with nothing edited, and a run that died at origin 2006 cannot present twelve windows as
+  twenty-six. A tier absent from the table is "never measured" rather than zero, so an artifact
+  carrying no top-100 row, or nothing below it, fails as uncertified rather than passing on the
+  rows it does have. `make verify-db` keeps its interface and now prints the scores it certified.
+
+The visual demotion of the forecast line was tracked separately and has since landed.

@@ -71,6 +71,11 @@ Browser → Next.js (:3000) → /api/[...path]/route.ts (proxy) → FastAPI (:80
   against the naive baseline; `pooled.BacktestTally` averages those into `validation.skill` and
   sums them per tier into the `model_evaluation` table the deploy gate reads. `validation`'s other
   figures are still the holdout window's alone.
+  `backend/scripts/verify_db.py` (`make verify-db`) is that gate: beyond the structural checks it
+  reads `model_evaluation` and refuses a build whose top 100 falls below `MIN_TOP_TIER_SKILL`,
+  whose lower tiers fail to beat the naive baseline, or whose span is shorter than
+  `pooled.backtest_span` of the artifact's own newest year. Changing the backtest span changes what
+  the gate expects; nothing there is hard-coded to 26.
   It is batch-only: the Dockerfile copies `app/` and not `scripts/`, so `lightgbm`
   and `scikit-learn` are dev-group dependencies and never reach the runtime image.
   `backend/app/services/forecast.py` holds only what the request path uses — the ADR 0001

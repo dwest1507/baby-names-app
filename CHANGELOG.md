@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.3.0](https://github.com/dwest1507/baby-names-app/compare/baby-names-app-v1.2.0...baby-names-app-v1.3.0) (2026-09-12)
+
+
+### Features
+
+* complete the pooled point stack with window, smoothing and reconciliation ([6ce9689](https://github.com/dwest1507/baby-names-app/commit/6ce9689f0566dba556066dd937e5ab6067e98488))
+* conformal bands calibrated per popularity tier and volatility bin ([25997a5](https://github.com/dwest1507/baby-names-app/commit/25997a5c7d2cd9f6401221d1664ca08e6ed5aeed))
+* demote the forecast line and replace diagnostics with per-name attributes ([9ef5234](https://github.com/dwest1507/baby-names-app/commit/9ef523487612daab24cd953f1a9788630773195a)), closes [#46](https://github.com/dwest1507/baby-names-app/issues/46)
+* enforce the forecast acceptance rule in the deploy gate ([4f375ac](https://github.com/dwest1507/baby-names-app/commit/4f375ac1e8fba0d8547919d857bdcad8af5eec5c))
+* measure per-name skill across all 26 rolling origins ([586d3f9](https://github.com/dwest1507/baby-names-app/commit/586d3f91cd628b45de8c7fa74706d627a2533830))
+* replace per-name ARIMA with the pooled forecasting model ([6b766f3](https://github.com/dwest1507/baby-names-app/commit/6b766f3ef840e7962294af937e1b21924d04017b))
+
+
+### Bug Fixes
+
+* carry no skill rather than crashing when nothing was backtested ([c06b782](https://github.com/dwest1507/baby-names-app/commit/c06b782f0fe443030516f729eb9b484a03ed88c0))
+* choose a sex without submitting the search form ([db71a2e](https://github.com/dwest1507/baby-names-app/commit/db71a2ee542786d0a7400832b5ca0ed284c1a728))
+* keep the forecast line readable against its own band ([d176d3d](https://github.com/dwest1507/baby-names-app/commit/d176d3dc953e02a7d02bbea279f8dd4283b29609))
+
 ## [1.2.0](https://github.com/dwest1507/baby-names-app/compare/baby-names-app-v1.1.0...baby-names-app-v1.2.0) (2026-09-08)
 
 

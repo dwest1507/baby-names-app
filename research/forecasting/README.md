@@ -11,8 +11,8 @@ pipeline itself.
 Since round 6 that arm is a **historical baseline, not what the site serves**: the pooled model
 of `pooled3.py` shipped as `backend/scripts/forecast/pooled.py`
 (`docs/adr/0010-a-pooled-model-replaces-per-name-arima.md`), and `arima.py` is frozen so rounds
-1-6 stay reproducible. Re-pointing `current` at the pooled pipeline is tracked separately; until
-then, benchmark against `gbt_pop` rather than `current` to compare with what is deployed.
+1-6 stay reproducible. Re-pointing `current` at the pooled pipeline is issue #55; until then,
+benchmark against `gbt_pop` rather than `current` to compare with what is deployed.
 
 ## Running it
 

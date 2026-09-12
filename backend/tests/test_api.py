@@ -165,6 +165,29 @@ def test_forecast_calibration_describes_this_names_own_stratum(use_stratified_db
     assert len({coverage for _, _, coverage in rows.values()}) > 1, rows
 
 
+def test_forecast_carries_the_names_own_stratum():
+    """The page labels the name with its tier and volatility bin.
+
+    Not with the stratum of the band it was handed: a name whose own cell was
+    too thin to earn a band is served the population's, and `calibration`
+    then says `*`/-1. Reporting that as the name's popularity tier would be
+    false. The two are different facts and the response carries both.
+    """
+    response = client.get("/api/names/emma/forecast", params={"sex": "F"})
+    assert response.status_code == 200
+    stratum = response.json()["stratum"]
+    assert stratum["tier"] in ("top100", "top1000", "top5000", "rest")
+    assert stratum["volatility_bin"] in (0, 1, 2)
+
+
+def test_forecast_stratum_is_absent_where_there_is_no_forecast():
+    response = client.get("/api/names/debra/forecast", params={"sex": "F"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["forecast"] == []
+    assert body["stratum"] is None
+
+
 def test_chat_unavailable_without_key(monkeypatch):
     from app import config
 
@@ -482,3 +505,4 @@ def test_a_forecast_from_an_artifact_that_predates_the_strata_still_serves(
     body = response.json()
     assert body["forecast"]
     assert body["calibration"] == {}
+    assert body["stratum"] is None

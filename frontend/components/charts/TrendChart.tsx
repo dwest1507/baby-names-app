@@ -124,6 +124,20 @@ export default function TrendChart({ payload }: TrendChartProps) {
   const label80 = intervalLabel('0.8')
   const label95 = intervalLabel('0.95')
 
+  // The line carries how well the pooled model has actually done on *this*
+  // name — its skill against a naive "no change" baseline, averaged over
+  // every five-year window it was eligible for since 1995. A visitor reading
+  // the dashed line should not have to look elsewhere to learn that for some
+  // names it is worth less than the flat line they could have drawn
+  // themselves. See docs/adr/0010-a-pooled-model-replaces-per-name-arima.md.
+  const skill = payload.validation?.skill
+  const forecastLabel =
+    skill === undefined
+      ? 'Pooled forecast'
+      : skill >= 0
+        ? `Pooled forecast · ${Math.round(skill * 100)}% better than no change`
+        : `Pooled forecast · ${Math.round(-skill * 100)}% worse than no change`
+
   return (
     <div
       className="h-[440px] w-full"
@@ -167,7 +181,7 @@ export default function TrendChart({ payload }: TrendChartProps) {
               name={label95}
               stroke="none"
               fill={CHART_COLORS.forecast}
-              fillOpacity={0.1}
+              fillOpacity={0.16}
               connectNulls={false}
               isAnimationActive={false}
               legendType="rect"
@@ -180,7 +194,7 @@ export default function TrendChart({ payload }: TrendChartProps) {
               name={label80}
               stroke="none"
               fill={CHART_COLORS.forecast}
-              fillOpacity={0.18}
+              fillOpacity={0.3}
               connectNulls={false}
               isAnimationActive={false}
               legendType="rect"
@@ -199,13 +213,20 @@ export default function TrendChart({ payload }: TrendChartProps) {
             isAnimationActive={false}
           />
           {hasForecast && (
+            /* The band is what the chart is really saying; the central line
+               is one path through it. Drawn thinner and dimmer than the
+               history it continues, and without the point markers that would
+               read as five measured values. See
+               docs/adr/0011-conformal-bands-keyed-by-strata.md. */
             <Line
               dataKey="forecast"
-              name="Pooled model forecast"
+              name={forecastLabel}
               stroke={CHART_COLORS.forecast}
-              strokeWidth={2}
+              strokeWidth={1.25}
+              strokeOpacity={0.65}
               strokeDasharray="6 4"
-              dot={{ r: 3, fill: CHART_COLORS.forecast, strokeWidth: 0 }}
+              dot={false}
+              activeDot={{ r: 3 }}
               connectNulls={false}
               isAnimationActive={false}
             />

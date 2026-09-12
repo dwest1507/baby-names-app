@@ -111,6 +111,17 @@ export interface Model {
   seed: number
 }
 
+// The name's *own* calibration stratum: the popularity tier it held at the
+// forecast origin and the volatility bin its recent wobble puts it in. Not
+// the stratum `calibration` describes — a name whose own cell was too thin to
+// earn a band of its own is served the whole population's, and the
+// calibration row then names `*`. The two are different facts and the page
+// reports both. Null on an artifact published before the columns existed.
+export interface Stratum {
+  tier: string
+  volatility_bin: number
+}
+
 export interface ForecastPoint {
   year: number
   mean: number
@@ -128,6 +139,7 @@ export interface ForecastPayload {
   validation: Validation | null
   model: Model | null
   calibration: Calibration | null
+  stratum: Stratum | null
 }
 
 export interface ChatEntry {

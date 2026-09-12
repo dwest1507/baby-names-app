@@ -21,6 +21,7 @@ function payload(overrides: Partial<ForecastPayload> = {}): ForecastPayload {
     validation: null,
     model: null,
     calibration: null,
+    stratum: null,
     ...overrides,
   }
 }

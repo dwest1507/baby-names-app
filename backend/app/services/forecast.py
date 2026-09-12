@@ -51,6 +51,15 @@ def build_response(
     80%/95%, and the figure it labels them with is the one measured for names
     like this one.
 
+    `stored["stratum"]` is the name's *own* calibration stratum — its
+    popularity tier at the origin and its volatility bin — which is not the
+    same fact as the stratum `calibration` describes. A name whose own cell
+    was too thin to earn a band of its own is served the whole population's,
+    and the calibration row then names `*`. The page reports both: the tier
+    and bin the name is in, beside the coverage measured for the band it was
+    actually given. `(None, None)` on an artifact published before the
+    columns existed (ADR 0006), which costs the label and nothing else.
+
     `model_card` is what the batch can honestly say about the model itself
     (`queries.get_model_card`). One pooled model forecasts every name, so it
     describes the batch rather than this name, and it is served under `model`
@@ -66,4 +75,12 @@ def build_response(
         "validation": stored["validation"] if stored else None,
         "model": model_card if stored else None,
         "calibration": calibration if stored else None,
+        "stratum": _stratum(stored) if stored else None,
     }
+
+
+def _stratum(stored: dict) -> dict | None:
+    tier, volatility_bin = stored.get("stratum", (None, None))
+    if tier is None or volatility_bin is None:
+        return None
+    return {"tier": tier, "volatility_bin": int(volatility_bin)}

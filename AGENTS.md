@@ -86,7 +86,17 @@ Browser → Next.js (:3000) → /api/[...path]/route.ts (proxy) → FastAPI (:80
   chart labels a band with the coverage measured for names like this one. Tier is read at the
   row's own origin (`stream_series` carries a rank per year), which is what makes a historical
   backtest tier by historical ranks and serving tier by the newest year's. See
-  `docs/adr/0011-conformal-bands-keyed-by-strata.md`.
+  `docs/adr/0011-conformal-bands-keyed-by-strata.md`. The response also carries the name's *own*
+  stratum under `stratum`, which is a different fact from the one `calibration` describes: a name
+  whose cell was too thin to earn a band is served the population's and its calibration row then
+  says `*`. `/search` labels the name from `stratum` and the band from `calibration`.
+- `/search` presents the forecast as a band with a line through it, not a trajectory: the shaded
+  interval is the dense object, the central line is thin, dimmed and dotless, and its legend
+  entry carries this name's measured skill against no-change. Beside the global model card sits a
+  per-name panel — skill, popularity tier, volatility bin, band width, position against the
+  name's own peak — where the ARIMA order and residual p-values used to be. Band width and peak
+  position are derived on the page from the forecast points and history it already has; tier and
+  bin are not derivable and come from `stratum`.
 - `backend/scripts/forecast/arima.py` is the frozen previous pipeline. Nothing in the batch
   calls it; `research/forecasting/methods.py` imports it so rounds 1-6 of the benchmark stay
   reproducible, which is why `statsmodels` and `scipy` remain dev-group dependencies.

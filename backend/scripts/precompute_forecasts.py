@@ -14,6 +14,11 @@ that never converged, and a resume flag so a crash did not cost the whole run.
 One fit for all names needs none of those, and they are gone; see
 docs/adr/0010-a-pooled-model-replaces-per-name-arima.md.
 
+Each fit is followed by the point stack — the growth cap, the path smoother
+and reconciliation to the corpus total, in that order — so what is calibrated,
+scored and stored are all the same forecasts the search page draws. See
+`pooled.point_forecasts`.
+
 The batch trains at three origins, all of them in the past relative to what
 they are used for:
 
@@ -86,12 +91,20 @@ def _ensure_schema(conn) -> None:
 
 
 def _fit(series, origin: int, note, threads: int):
-    """Train at one origin and forecast every name eligible there."""
+    """Train at one origin and forecast every name eligible there.
+
+    What comes back is the *published* forecast, not the boosters' raw output:
+    `pooled.point_forecasts` caps each path's implied growth, smooths it, and
+    scales each (sex, horizon) slice onto the share that sex held at the
+    origin. The band calibration and the holdout scoring therefore measure the
+    same forecasts the search page draws, which they would not if the stack
+    were applied only to the production origin.
+    """
     started = time.monotonic()
     training = pooled.training_rows(series, origin)
     models = pooled.train(training, threads=threads)
     rows = pooled.build_rows(series, [origin])
-    predicted = pooled.predict(models, rows)
+    predicted = pooled.point_forecasts(models, rows, pooled.growth_caps(training))
     note(
         f"  origin {origin}: {len(training):,} training rows, "
         f"{len(rows):,} names forecast ({time.monotonic() - started:.0f}s)"
@@ -251,7 +264,7 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
         card = pooled.model_card(
             trained_through=production_origin,
             training_rows_count=training_count,
-            training_origins=production_origin - pooled.H - pooled.FIRST_TRAIN_ORIGIN + 1,
+            training_origins=len(pooled.training_origins(production_origin)),
         )
         conn.execute("DELETE FROM model_card")
         conn.execute("INSERT INTO model_card (id, payload) VALUES (1, ?)", (json.dumps(card),))

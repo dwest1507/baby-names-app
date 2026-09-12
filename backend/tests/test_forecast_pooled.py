@@ -81,6 +81,7 @@ def test_the_shipped_pipeline_reproduces_the_researched_forecasts(parity, series
     """The whole pipeline, end to end, against the pinned predictions."""
     training = pooled.training_rows(series, parity["origin"])
     assert len(training) == parity["training_rows"]
+    assert sorted({row["origin"] for row in training}) == parity["training_origins"]
 
     models = pooled.train(training, seed=parity["seed"], threads=parity["threads"])
     rows = pooled.build_rows(series, [parity["origin"]])
@@ -93,6 +94,33 @@ def test_the_shipped_pipeline_reproduces_the_researched_forecasts(parity, series
     # absorbs it — a real porting error moves these numbers far further than
     # this, because it moves a split rather than a rounding.
     np.testing.assert_allclose(predicted, parity["predicted"], rtol=1e-9, atol=1e-15)
+
+
+def test_the_shipped_point_stack_reproduces_the_researched_forecasts(parity, series):
+    """And the three corrections that turn a prediction into the published line.
+
+    The booster's output is not what the site draws. Research capped each
+    path's implied growth, smoothed it, and scaled each (sex, horizon) slice
+    onto the origin's total, in that order; `pooled.point_forecasts` is the
+    port of those three, and this pins it against the harness modules that
+    measured them (`cap.py`, `smooth.py`, `reconcile.py`).
+    """
+    training = pooled.training_rows(series, parity["origin"])
+    models = pooled.train(training, seed=parity["seed"], threads=parity["threads"])
+    rows = pooled.build_rows(series, [parity["origin"]])
+
+    assert pooled.TRAIN_WINDOW == parity["window"]
+    assert pooled.CAP_QUANTILE == parity["cap_quantile"]
+
+    # Pinned on its own because it does not show up in the forecasts: a bound
+    # at the 99.9th percentile of what names actually do is one no ordinary
+    # forecast reaches, so nothing in this fixture is clipped and a cap
+    # derived from the wrong rows would leave the published numbers identical.
+    caps = pooled.growth_caps(training)
+    np.testing.assert_allclose(caps, parity["caps"], rtol=1e-12)
+
+    published = pooled.point_forecasts(models, rows, caps)
+    np.testing.assert_allclose(published, parity["published"], rtol=1e-9, atol=1e-15)
 
 
 # Refits the fixture in a fresh interpreter and prints the forecasts, so the

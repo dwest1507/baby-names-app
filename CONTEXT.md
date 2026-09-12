@@ -40,6 +40,22 @@ _Avoid_: Benchmark sweep, rolling test origins, evaluation slice
 One of four rank-based frequency brackets (`top100`, `top1000`, `top5000`, `rest`) defined within an origin year, used to stratify evaluation, acceptance rules, and conformal interval calibration.
 _Avoid_: Rank bracket, frequency bucket, volume tier
 
+**Training Window**:
+The bounded span of recent origin years (currently the most recent 40) a pooled fit may learn from; rows from earlier origins are discarded rather than down-weighted.
+_Avoid_: Lookback, recency decay, training horizon
+
+**Growth Cap**:
+The per-horizon bound on a forecast's implied growth against its origin share, read off the largest five-year moves names actually made.
+_Avoid_: Clamp, ceiling, outlier filter
+
+**Path Smoothing**:
+The endpoint-preserving moving average applied across a forecast's log steps so the five-year line reads as one trajectory rather than five independent per-horizon predictions.
+_Avoid_: Curve fitting, interpolation, trend line
+
+**Corpus Reconciliation**:
+The single multiplicative factor applied per year, sex, and forecast horizon that scales every forecast in a slice onto the total share that sex held at the origin year.
+_Avoid_: Normalization, rescaling, calibration
+
 **Model Evaluation**:
 The precomputed summary of backtest skill scores per popularity tier stored in the built database to self-certify artifact quality before deployment.
 _Avoid_: Model metrics, benchmark report, score card

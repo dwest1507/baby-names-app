@@ -64,6 +64,7 @@ $PY conformal.py  .work/all.jsonl --method combo_pooled_ens --cal-origins 2014 -
 | `intervals.py` | scores band constructions against each other — residual, direct-quantile and conformalised — on interval score, not coverage alone |
 | `reconcile.py` | makes the per-name forecasts add up to the share total they have to sum to, and scores what that costs or buys |
 | `smooth.py` | how jagged the five-year path is, and what smoothing it costs on accuracy |
+| `make_parity_fixture.py` | runs generated series through these modules and pins what they produced into `backend/tests/fixtures/pooled_parity.json`, so the shipped port cannot drift from the code that measured it |
 
 ## Reading the metrics
 

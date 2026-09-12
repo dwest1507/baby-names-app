@@ -58,7 +58,12 @@ Browser → Next.js (:3000) → /api/[...path]/route.ts (proxy) → FastAPI (:80
   per-name ARIMA fit that scored negative skill outside the top 1000 — see
   `docs/adr/0010-a-pooled-model-replaces-per-name-arima.md`. Feature extraction streams
   straight off `idx_names_name_sex_year` (ADR 0009) with no sort file and no intermediate
-  artifact. It is batch-only: the Dockerfile copies `app/` and not `scripts/`, so `lightgbm`
+  artifact. Training is bounded to the most recent 40 origins, and what the boosters produce
+  is not yet what the site draws: `pooled.point_forecasts` caps each path's implied growth,
+  smooths it with an endpoint-preserving moving average over its log steps, and reconciles
+  each (sex, horizon) slice onto the origin's total with one multiplicative factor — in that
+  order, which is the only order in which the reconciled forecasts still add up.
+  It is batch-only: the Dockerfile copies `app/` and not `scripts/`, so `lightgbm`
   and `scikit-learn` are dev-group dependencies and never reach the runtime image.
   `backend/app/services/forecast.py` holds only what the request path uses — the ADR 0001
   eligibility rule and the response composer, which fits nothing.

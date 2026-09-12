@@ -11,11 +11,17 @@ docs/adr/0010-a-pooled-model-replaces-per-name-arima.md.
 The configuration here is the one that research settled on, and it is
 deliberately the plain one: the base feature block with no hand-built
 interactions, no cohort or lifecycle features, popularity-weighted rows, one
-seed, one booster per horizon, and the target expressed as log growth
-relative to the origin year. `features` is a port of
-`research/forecasting/pooled2.py`'s base block; `tests/test_forecast_pooled.py`
-pins the two against a checked-in fixture so the port cannot drift from the
-code that measured it.
+seed, one booster per horizon, the target expressed as log growth relative to
+the origin year, and a training pool bounded to the most recent `TRAIN_WINDOW`
+origins. `features` is a port of `research/forecasting/pooled2.py`'s base
+block; `tests/test_forecast_pooled.py` pins the two against a checked-in
+fixture so the port cannot drift from the code that measured it.
+
+What the boosters predict is not yet what the site draws. `point_forecasts`
+applies three measured corrections on top, in an order that is not
+interchangeable: the growth cap, then the path smoother, then reconciliation to
+the corpus total. Each is a separate function above so it can be measured on
+its own, and `tests/test_forecast_point_stack.py` pins what each one does.
 
 Like `arima.py`, this is batch-only. It runs from
 `scripts/precompute_forecasts.py`, is never imported by the application
@@ -46,6 +52,16 @@ SEED = 0
 # Training reaches back to name-origins from this year. Earlier SSA data is
 # thin enough that the features built from it are mostly floor values.
 FIRST_TRAIN_ORIGIN = 1930
+
+# ...and no further back than this many origins, which in practice is the
+# binding constraint. Research swept the window and found an interior optimum
+# at four decades: training on *less* history costs skill, and so does
+# training on more. Discarding the older rows outright beat discounting them
+# by a factor of three on the tier below the top 100, which is not what a
+# "older data is less relevant" story predicts — what the data supports is a
+# bound on how much history the model wants, not a preference for recency.
+# See research/forecasting/FINDINGS-6.md, section 2.
+TRAIN_WINDOW = 40
 
 # The base feature block: where the name's share is, how fast it has been
 # moving over five different spans, whether that movement is accelerating,
@@ -87,6 +103,12 @@ HYPERPARAMETERS = {
 # and the clip stops a handful of giants from becoming the entire fit.
 WEIGHT_POWER = 0.5
 WEIGHT_CLIP = 50.0
+
+# The growth cap reads its bound off the training outcomes rather than
+# inventing one: all but a thousandth of the five-year moves names actually
+# made. High enough that no ordinary forecast touches it, finite enough that a
+# divergence cannot be drawn as a line. See `growth_caps`.
+CAP_QUANTILE = 0.999
 
 # LightGBM's histogram building is deterministic only for a fixed thread
 # count, so the batch pins one rather than taking whatever the machine
@@ -226,14 +248,22 @@ def build_rows(series, origins) -> list[dict]:
     return rows
 
 
-def training_rows(series, origin: int) -> list[dict]:
-    """Rows whose five-year outcome had already happened by `origin`.
+def training_origins(origin: int) -> range:
+    """The origins a fit made at `origin` is allowed to learn from.
 
-    Nothing later than the origin being forecast may inform the fit, so the
-    newest usable training origin is five years back: its targets closed in
-    the origin year itself.
+    Bounded at both ends. Nothing later than five years back, because a
+    training row's five-year outcome has to have closed by the year being
+    forecast from — otherwise the fit has seen the future. And nothing earlier
+    than `TRAIN_WINDOW` origins before that, because the model does not want
+    it.
     """
-    return build_rows(series, range(FIRST_TRAIN_ORIGIN, origin - H + 1))
+    newest = origin - H
+    return range(max(FIRST_TRAIN_ORIGIN, newest - TRAIN_WINDOW + 1), newest + 1)
+
+
+def training_rows(series, origin: int) -> list[dict]:
+    """Rows whose five-year outcome had already happened by `origin`."""
+    return build_rows(series, training_origins(origin))
 
 
 def row_weights(rows) -> np.ndarray:
@@ -290,6 +320,115 @@ def predict(models, rows) -> np.ndarray:
     growth = np.column_stack([model.predict(X) for model in models])
     last = np.array([row["last"] for row in rows])
     return np.exp(growth) * last[:, None]
+
+
+def growth_caps(rows, quantile: float = CAP_QUANTILE) -> np.ndarray:
+    """Per-horizon bound on |log(forecast / origin share)|, from observed moves.
+
+    Only rows whose whole five-year window has been observed can say anything
+    about how far a name moves in five years, so the others are left out
+    rather than floored into the quantile.
+    """
+    observed = [row for row in rows if all(value is not None for value in row["actual"])]
+    if not observed:
+        return np.full(H, np.inf)
+    actual = np.maximum(np.array([row["actual"] for row in observed], dtype=float), FLOOR)
+    last = np.maximum(np.array([row["last"] for row in observed], dtype=float), FLOOR)
+    return np.quantile(np.abs(np.log(actual / last[:, None])), quantile, axis=0)
+
+
+def cap_growth(rows, predicted: np.ndarray, caps: np.ndarray) -> np.ndarray:
+    """Clip each forecast's implied growth to `caps`, leaving the rest alone.
+
+    A model fitted in log space can extrapolate multiplicative growth without
+    limit; research measured a five-year ratio of 2.5e44 on nine name-origins
+    out of ~13,000. Rare, and one of them is a chart a visitor can see is
+    broken, so the guardrail stays. It is a clip and not a shrink: a forecast
+    inside the bound comes back bit-for-bit unchanged.
+    """
+    if not rows:
+        return predicted
+    last = np.maximum(np.array([row["last"] for row in rows], dtype=float), FLOOR)
+    growth = np.log(np.maximum(predicted, FLOOR) / last[:, None])
+    clipped = np.clip(growth, -caps, caps)
+    return np.where(clipped == growth, predicted, np.exp(clipped) * last[:, None])
+
+
+def smooth_paths(rows, predicted: np.ndarray) -> np.ndarray:
+    """Take the corners off each five-year path, without moving where it ends.
+
+    One booster per horizon means nothing ties the five of them together: the
+    model fitting year three has never seen year two's answer, so the path can
+    rise, dip and rise again without that ever having been a claim about the
+    name. A visitor reads the *shape* of the line, so the corners are noise
+    presented as information.
+
+    The fix is a three-point moving average over the path's log steps, padded
+    at both edges with the end steps themselves. The padding is what makes it
+    endpoint-preserving: each of the five raw steps enters the smoothed sum
+    exactly three times, so the smoothed steps sum to the raw ones and the
+    five-year value is untouched to floating point. Research measured it as an
+    accuracy gain rather than a cosmetic one — reversals roughly halve, and
+    poolSkill rises in the three tiers visitors look at (FINDINGS-6.md,
+    section 3).
+    """
+    if not rows:
+        return predicted
+    last = np.array([row["last"] for row in rows], dtype=float)
+    log_path = np.log(np.maximum(predicted, FLOOR))
+    steps = np.diff(np.column_stack([np.log(np.maximum(last, FLOOR)), log_path]), axis=1)
+    padded = np.column_stack([steps[:, :1], steps, steps[:, -1:]])
+    kernel = np.ones(3) / 3.0
+    smoothed = np.column_stack([padded[:, i : i + 3] @ kernel for i in range(steps.shape[1])])
+    return np.exp(np.log(np.maximum(last, FLOOR))[:, None] + np.cumsum(smoothed, axis=1))
+
+
+def reconcile(rows, predicted: np.ndarray) -> np.ndarray:
+    """Scale each (sex, horizon) slice so the forecasts add up to what they must.
+
+    One factor for everyone in the slice, applied multiplicatively. That is a
+    constant shift in log space, so it leaves every name's rank and every
+    ratio between two names exactly where the model put them: the constraint
+    corrects the level of the whole cross-section, and expresses no opinion
+    about any individual name.
+
+    The alternatives were measured and are not used. Spreading the
+    discrepancy equally in absolute terms takes far more from a small name
+    than from a large one and has to be clipped at zero; spreading it by each
+    name's own volatility loads it onto exactly the names whose futures are
+    least certain. Neither is applied per tier either — a tier is a property
+    of the evaluation, not of the adding-up constraint, and reconciling within
+    tiers would make each one add up to a total nothing requires it to hit.
+    """
+    if not rows:
+        return predicted
+    reconciled = np.array(predicted, dtype=float)
+    last = np.array([row["last"] for row in rows], dtype=float)
+    # A slice is one origin's names of one sex: shares sum to a total within a
+    # sex and within a year, and nothing is required to hold across either.
+    slices = np.array([(row["origin"], row["key"].rsplit("|", 1)[1]) for row in rows])
+    for origin, sex in np.unique(slices, axis=0):
+        group = (slices[:, 0] == origin) & (slices[:, 1] == sex)
+        totals = reconciled[group].sum(axis=0)
+        reconciled[group] *= np.where(
+            totals > 0, last[group].sum() / np.maximum(totals, FLOOR), 1.0
+        )
+    return reconciled
+
+
+def point_forecasts(models, rows, caps: np.ndarray) -> np.ndarray:
+    """The published point forecast: predict, cap, smooth, reconcile.
+
+    The four steps are exposed separately above so each can be measured on its
+    own, but they are only correct in this order and callers get them from
+    here rather than composing them again. Smoothing preserves each path's
+    five-year endpoint while moving years one through four, so it changes the
+    sums reconciliation targets; reconciling first and smoothing afterwards
+    would break the adding-up at four of the five horizons. The cap comes
+    before both because it is a statement about the model's own output, and
+    because a divergence left in would drag every other name's factor with it.
+    """
+    return reconcile(rows, smooth_paths(rows, cap_growth(rows, predict(models, rows), caps)))
 
 
 def log_residuals(rows, predicted: np.ndarray) -> np.ndarray:

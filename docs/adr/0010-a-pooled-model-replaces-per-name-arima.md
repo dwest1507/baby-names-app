@@ -70,6 +70,44 @@ pass. The configuration is the plain one research settled on:
 - **One seed, one booster per horizon.** Horizons are predicted directly rather than recursively,
   so an error at h=1 cannot compound to h=5.
 
+**Training is bounded to the most recent 40 origins.** The pool used to start at 1930 and weight a
+1935 name-origin exactly like a 2014 one. Research swept the window and found an interior optimum
+at four decades — both less history and more of it cost skill — and found that discarding the older
+rows outright beats discounting them with a half-life by about a factor of three on ranks 101–1000
+(FINDINGS-6.md §2). So this is a bound on how much history the model wants, not a claim that the
+1940s are a different process. It makes training cheaper as a side effect, not as its purpose.
+
+**What the boosters produce is not yet what the site draws.** Three corrections are applied on top,
+in this order, by `pooled.point_forecasts`:
+
+1. **Growth cap.** Each path's implied `|log(forecast / origin share)|` is clipped at the 99.9th
+   percentile of the five-year moves names actually made, read off the training outcomes rather
+   than invented. A model working in log space can extrapolate without limit — research measured a
+   five-year ratio of 2.5e44 on nine name-origins — and one such forecast is a visibly broken
+   chart. It is a clip, not a shrink: an ordinary forecast passes through bit-for-bit.
+2. **Path smoothing.** A three-point moving average over the path's log steps, padded at both
+   edges. One booster per horizon means nothing ties the five together, so the line can rise, dip
+   and rise again without that ever having been a claim about the name. The padding makes each raw
+   step enter the smoothed sum exactly three times, so the smoothed steps sum to the raw ones and
+   **the five-year endpoint is unchanged**: it redistributes years one through four and nothing
+   else. Research measured it as an accuracy change rather than a cosmetic one — reversals roughly
+   halve, and poolSkill rises +0.0024 / +0.0023 / +0.0012 in the top three tiers, costing 0.0009 in
+   the deep tail (FINDINGS-6.md §3).
+3. **Reconciliation to the corpus total.** `popularity_percent` is a share within a sex, so across
+   every name of a sex in a year it sums to a fixed total; forecasting names one at a time lets the
+   sum drift, and it drifts upward, which means predicting growth for more names than can grow. One
+   multiplicative factor per (year, sex, horizon) scales each slice onto the total that sex actually
+   held at the origin. Multiplicative and global is the measured choice: it is a constant shift in
+   log space, so every ratio between two names survives it and nothing is pushed toward zero. The
+   equal-absolute (`ols`) and volatility-weighted spreads were both measured and are not used, and
+   there is no per-tier path — a tier is a property of the evaluation, not of the adding-up
+   constraint.
+
+**The order is load-bearing.** Smoothing preserves each path's endpoint but moves h1–h4, so it
+changes the very sums reconciliation targets; reconciling first and smoothing afterwards would
+break the adding-up again at four of five horizons. Research composed them in this order and
+measured that they still pay together (FINDINGS-6.md §3, "Where it goes in the pipeline").
+
 **Origins.** The batch trains at three, each strictly in the past relative to what it is used for:
 
 | origin | what it produces |
@@ -140,7 +178,14 @@ else moves:
   but `research/forecasting/methods.py` imports it as the frozen historical arm so rounds 1–6
   remain reproducible.
 
-What is deliberately not done here, and is tracked separately: the 40-origin training window, path
-smoothing and reconciliation to the corpus total; conformal bands stratified by tier × volatility;
-per-name skill averaged across all rolling origins; the visual demotion of the forecast line; and
-the `model_evaluation` table with the `verify-db` deploy gate that reads it.
+- **The point stack is applied at every origin the batch fits, not only the production one.** The
+  bands are calibrated on the residuals of capped, smoothed, reconciled forecasts and the holdout is
+  scored against the same, so `calibration` and each name's `validation` describe the forecasts the
+  search page actually draws.
+- **The parity fixture pins the stack too, and pins the cap separately.** A bound at the 99.9th
+  percentile of real moves is one no ordinary forecast reaches, so nothing in the fixture is
+  clipped and the published numbers alone would not notice a cap derived from the wrong rows.
+
+What is deliberately not done here, and is tracked separately: conformal bands stratified by
+tier × volatility; per-name skill averaged across all rolling origins; the visual demotion of the
+forecast line; and the `model_evaluation` table with the `verify-db` deploy gate that reads it.

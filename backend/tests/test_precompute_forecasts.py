@@ -285,3 +285,61 @@ def test_the_model_card_is_stored_once_rather_than_per_name(built, tmp_path):
     assert card["training_rows"] > 0
     for payload in _forecasts(db).values():
         assert "model" not in json.loads(payload)
+
+
+def test_the_published_forecasts_add_up_to_the_share_each_sex_held(built, tmp_path):
+    """Reconciliation reaches the artifact, not just the module that does it.
+
+    Shares within a sex sum to a fixed total, so the forecasts have to as
+    well. The batch's own point stack smooths each path and then scales each
+    (sex, horizon) slice onto the total observed at the origin; if either step
+    were dropped on the way into `forecasts`, this is where it would show.
+    """
+    db = _copy(built, tmp_path, "adds-up.db")
+    run(db)
+
+    conn = sqlite3.connect(db)
+    try:
+        (newest,) = conn.execute("SELECT MAX(year) FROM names").fetchone()
+        origin_share = {
+            (name.lower(), sex): percent
+            for name, sex, percent in conn.execute(
+                "SELECT name, sex, popularity_percent FROM names WHERE year = ?", (newest,)
+            )
+        }
+    finally:
+        conn.close()
+
+    totals: dict[str, list[float]] = {}
+    targets: dict[str, float] = {}
+    for (name, sex), payload in _forecasts(db).items():
+        points = json.loads(payload)["forecast"]
+        # The constraint is checked over the years actually published — the
+        # five after the origin, which on the 2025 database is 2026-2030.
+        assert [point["year"] for point in points] == list(range(newest + 1, newest + 6))
+        means = [point["mean"] for point in points]
+        totals[sex] = [a + b for a, b in zip(totals.get(sex, [0.0] * 5), means, strict=True)]
+        targets[sex] = targets.get(sex, 0.0) + origin_share[(name, sex)]
+
+    assert totals
+    for sex, forecast_total in totals.items():
+        for value in forecast_total:
+            assert value == pytest.approx(targets[sex], rel=1e-9)
+
+
+def test_the_model_card_reports_the_bounded_training_window(built, tmp_path):
+    """The card describes the fit that happened, window included."""
+    db = _copy(built, tmp_path, "window.db")
+    result = run(db)
+
+    conn = sqlite3.connect(db)
+    try:
+        (payload,) = conn.execute("SELECT payload FROM model_card WHERE id = 1").fetchone()
+        (newest,) = conn.execute("SELECT MAX(year) FROM names").fetchone()
+    finally:
+        conn.close()
+
+    card = json.loads(payload)
+    assert card == result["model"]
+    assert card["training_origins"] == len(pooled.training_origins(newest))
+    assert card["training_origins"] <= pooled.TRAIN_WINDOW

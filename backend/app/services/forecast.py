@@ -42,11 +42,14 @@ def build_response(
     way the response shape matches what the endpoint always returned: an
     empty forecast list rather than a missing key. No fitting happens here.
 
-    `calibration` is the batch's measured interval coverage
-    (`queries.get_calibration`), the same for every name — it is None only
-    when there is no forecast to draw bands for. See
-    docs/adr/0005-truthful-confidence-intervals.md: the frontend must label
-    the shaded bands with this measured coverage, not the nominal 80%/95%.
+    `calibration` is the measured interval coverage for *this name's*
+    stratum — its popularity tier and volatility bin
+    (`queries.get_calibration`) — rather than one population figure shared by
+    every name. It is None only when there is no forecast to draw bands for.
+    See docs/adr/0011-conformal-bands-keyed-by-strata.md: the frontend must
+    label the shaded bands with this measured coverage, not the nominal
+    80%/95%, and the figure it labels them with is the one measured for names
+    like this one.
 
     `model_card` is what the batch can honestly say about the model itself
     (`queries.get_model_card`). One pooled model forecasts every name, so it

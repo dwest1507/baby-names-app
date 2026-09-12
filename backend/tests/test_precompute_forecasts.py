@@ -38,9 +38,22 @@ def _calibration(db_path: str) -> dict:
     conn = sqlite3.connect(db_path)
     try:
         return {
-            level: (coverage, n)
-            for level, coverage, n in conn.execute(
-                "SELECT nominal_level, empirical_coverage, n FROM calibration"
+            (level, tier, bin_index): (coverage, n)
+            for level, tier, bin_index, coverage, n in conn.execute(
+                "SELECT nominal_level, tier, volatility_bin, empirical_coverage, n FROM calibration"
+            )
+        }
+    finally:
+        conn.close()
+
+
+def _strata(db_path: str) -> dict:
+    conn = sqlite3.connect(db_path)
+    try:
+        return {
+            (name, sex): (tier, bin_index)
+            for name, sex, tier, bin_index in conn.execute(
+                "SELECT name, sex, tier, volatility_bin FROM forecasts"
             )
         }
     finally:
@@ -343,3 +356,171 @@ def test_the_model_card_reports_the_bounded_training_window(built, tmp_path):
     assert card == result["model"]
     assert card["training_origins"] == len(pooled.training_origins(newest))
     assert card["training_origins"] <= pooled.TRAIN_WINDOW
+
+
+def test_calibration_is_keyed_by_level_tier_and_volatility_bin(built, tmp_path):
+    """Coverage is reported per stratum, because that is where it goes wrong.
+
+    A single population figure can read 0.80 while the steady names are
+    covered 0.95 of the time and the jumpy ones 0.60 — and it is the jumpy
+    name's visitor who is being told 80%. One row per
+    `(level, tier, volatility bin)` is what lets the chart label a band with
+    the coverage measured for names like the one being looked at.
+    """
+    db = _copy(built, tmp_path, "strata.db")
+    run(db)
+
+    calibration = _calibration(db)
+
+    assert calibration
+    levels = {level for level, _, _ in calibration}
+    assert levels == {0.8, 0.95}
+    for level in levels:
+        strata = {(tier, b) for lv, tier, b in calibration if lv == level}
+        assert strata
+        for tier, bin_index in strata - {pooled.GLOBAL_STRATUM}:
+            assert tier in pooled.TIERS
+            assert 0 <= bin_index < pooled.VOLATILITY_BINS
+    for coverage, n in calibration.values():
+        assert 0.0 <= coverage <= 1.0
+        assert n > 0
+
+
+def test_the_population_row_holds_only_the_names_that_were_given_that_band(built, tmp_path):
+    """The fallback row reports the fallback band, not everything pooled.
+
+    A name whose stratum was too thin to earn a band was given the global one,
+    and the global row is what it will be reported. So that row has to be
+    measured on those names — pooling in the names that got a *different*,
+    narrower or wider band of their own would make it describe a band nobody
+    holds.
+    """
+    db = _copy(built, tmp_path, "population.db")
+    result = run(db)
+
+    calibration = _calibration(db)
+    global_tier, global_bin = pooled.GLOBAL_STRATUM
+
+    for level in (0.8, 0.95):
+        cells = {(tier, b): value for (lv, tier, b), value in calibration.items() if lv == level}
+        assert cells
+        total = sum(n for _, n in cells.values())
+        # The headline the CLI prints pools every cell; it is deliberately not
+        # a row in the table, because it describes no single band.
+        pooled_hits = sum(coverage * n for coverage, n in cells.values())
+        assert result["calibration"][str(level)] == pytest.approx(pooled_hits / total, rel=1e-9)
+        if (global_tier, global_bin) in cells:
+            assert cells[(global_tier, global_bin)][1] < total or len(cells) == 1
+
+
+def test_each_forecast_carries_the_stratum_it_is_served_under(built, tmp_path):
+    """Serving tiers a name by its rank in the newest observed year.
+
+    The band a visitor sees is the one for this name's stratum *now*, so the
+    tier stored beside the forecast has to be read from the newest year's
+    rank — not from the historical origin the bands were calibrated at, and
+    not from wherever the name's series happens to end.
+    """
+    db = _copy(built, tmp_path, "served.db")
+    run(db)
+
+    conn = sqlite3.connect(db)
+    try:
+        (newest,) = conn.execute("SELECT MAX(year) FROM names").fetchone()
+        newest_rank = {
+            (name.lower(), sex): rank
+            for name, sex, rank in conn.execute(
+                "SELECT name, sex, popularity_rank FROM names WHERE year = ?", (newest,)
+            )
+        }
+    finally:
+        conn.close()
+
+    strata = _strata(db)
+
+    assert strata
+    for key, (tier, bin_index) in strata.items():
+        assert tier == pooled.popularity_tier(newest_rank[key])
+        assert 0 <= bin_index < pooled.VOLATILITY_BINS
+
+
+def test_only_names_with_a_scored_holdout_contribute_to_calibration(built, tmp_path):
+    """Coverage rests on holdouts that happened, so an absent name adds nothing.
+
+    The sample database deliberately carries a name that has fallen out of use
+    and one with too little history, neither of which is forecast at all — and
+    an eligible name whose holdout window is incomplete has a forecast but no
+    scored points. The published `n` has to be exactly the points that were
+    actually checked, or the coverage fraction is diluted by names that were
+    never tested.
+    """
+    db = _copy(built, tmp_path, "ineligible.db")
+    run(db)
+
+    conn = sqlite3.connect(db)
+    try:
+        all_names = {
+            (name.lower(), sex)
+            for name, sex in conn.execute("SELECT DISTINCT name, sex FROM names")
+        }
+    finally:
+        conn.close()
+
+    stored = _forecasts(db)
+    scored = [
+        payload for payload in stored.values() if json.loads(payload)["validation"] is not None
+    ]
+    calibration = _calibration(db)
+
+    assert all_names - set(stored), "expected the sample to hold an unforecastable name"
+    assert scored
+    for level in (0.8, 0.95):
+        counted = sum(n for (lv, _, _), (_, n) in calibration.items() if lv == level)
+        assert counted == len(scored) * pooled.H
+
+
+def test_a_corpus_big_enough_gets_bands_of_its_own_per_stratum(stratified_db):
+    """Conditioning has to actually happen once there are rows to condition on.
+
+    On the sample database every cell is below `MIN_STRATUM_ROWS` and every
+    band correctly falls back to the population's, so nothing there can tell a
+    conditioned pipeline from an unconditioned one. This corpus fills the
+    cells. See docs/adr/0011-conformal-bands-keyed-by-strata.md.
+    """
+    calibration = _calibration(stratified_db)
+
+    assert calibration
+    for level in (0.8, 0.95):
+        strata = {(tier, b) for lv, tier, b in calibration if lv == level}
+        assert len(strata - {pooled.GLOBAL_STRATUM}) > 1, strata
+        for tier, bin_index in strata - {pooled.GLOBAL_STRATUM}:
+            assert tier in pooled.TIERS
+            assert 0 <= bin_index < pooled.VOLATILITY_BINS
+        for (lv, tier, b), (_coverage, n) in calibration.items():
+            if lv == level and (tier, b) != pooled.GLOBAL_STRATUM:
+                assert n >= pooled.MIN_STRATUM_ROWS
+
+
+def test_a_volatile_name_is_published_with_a_wider_band(stratified_db):
+    """End to end: the width a visitor sees depends on this name's own wobble.
+
+    Two names at the same popularity tier, one in the steadiest volatility bin
+    and one in the jumpiest, must reach `forecasts` with visibly different
+    band widths — or the conditioning is happening somewhere that the stored
+    artifact never sees.
+    """
+    strata = _strata(stratified_db)
+    stored = _forecasts(stratified_db)
+
+    def width(key) -> float:
+        point = json.loads(stored[key])["forecast"][-1]
+        return point["hi95"] / point["lo95"]
+
+    tier = "top100"
+    steady = [key for key, (t, b) in strata.items() if t == tier and b == 0]
+    lurching = [key for key, (t, b) in strata.items() if t == tier and b == 2]
+
+    assert steady and lurching
+    narrowest = min(width(key) for key in lurching)
+    widest = max(width(key) for key in steady)
+    assert narrowest > widest, (widest, narrowest)

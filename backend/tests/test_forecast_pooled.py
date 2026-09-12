@@ -50,7 +50,12 @@ def series(parity) -> list:
             entry["key"],
             np.array(entry["years"], dtype=np.int32),
             np.array(entry["values"], dtype=np.float64),
-            entry["rank"],
+            # The harness gives a series one rank, not one per year (its
+            # `bucket()` reads a single recent rank), so the replay holds it
+            # constant. Nothing pinned here depends on rank: it reaches
+            # neither the feature block, the fit, nor the point stack — only
+            # the band strata, which the fixture does not cover.
+            np.full(len(entry["years"]), entry["rank"], dtype=np.int32),
         )
         for entry in parity["series"]
     ]
@@ -133,7 +138,12 @@ from scripts.forecast import pooled
 
 parity = json.loads(open(%r).read())
 series = [
-    (e["key"], np.array(e["years"], dtype=np.int32), np.array(e["values"]), e["rank"])
+    (
+        e["key"],
+        np.array(e["years"], dtype=np.int32),
+        np.array(e["values"]),
+        np.full(len(e["years"]), e["rank"], dtype=np.int32),
+    )
     for e in parity["series"]
 ]
 models = pooled.train(pooled.training_rows(series, parity["origin"]), threads=parity["threads"])

@@ -41,7 +41,7 @@ def make_series(count: int = 40, first_year: int = 1900, last_year: int = 2025) 
                 f"name{i:03d}|{'F' if i % 2 else 'M'}",
                 years,
                 np.maximum(values, 1e-7),
-                int(rng.integers(1, 9000)),
+                np.full(len(years), rng.integers(1, 9000), dtype=np.int32),
             )
         )
     return series

@@ -119,22 +119,30 @@ def test_forecasts_table_holds_only_eligible_names_and_excludes_history(sample_d
 
 def test_batch_aggregates_holdout_interval_coverage_across_every_eligible_name(sample_db):
     """The calibration table records empirical coverage measured across the
-    whole batch's holdout backtest, not a single name's 5 holdout points. See
-    docs/adr/0005-truthful-confidence-intervals.md.
+    whole batch's holdout backtest, not a single name's 5 holdout points, and
+    it records it per `(popularity tier, volatility bin)` rather than as one
+    population figure. See docs/adr/0011-conformal-bands-keyed-by-strata.md.
     """
     conn = sqlite3.connect(sample_db)
     try:
         rows = {
-            level: (coverage, n)
-            for level, coverage, n in conn.execute(
-                "SELECT nominal_level, empirical_coverage, n FROM calibration"
+            (level, tier, bin_index): (coverage, n)
+            for level, tier, bin_index, coverage, n in conn.execute(
+                "SELECT nominal_level, tier, volatility_bin, empirical_coverage, n FROM calibration"
             )
         }
     finally:
         conn.close()
 
-    assert set(rows) == {0.8, 0.95}
-    for _level, (coverage, n) in rows.items():
+    assert {level for level, _, _ in rows} == {0.8, 0.95}
+    # Nine eligible names cannot fill a single stratum to
+    # `pooled.MIN_STRATUM_ROWS`, so every band here correctly falls back to
+    # the population's and every holdout point is counted into that one cell.
+    # A sample this size measuring a per-stratum coverage figure would be the
+    # defect, not the feature.
+    for level in (0.8, 0.95):
+        assert {(tier, b) for lv, tier, b in rows if lv == level} == {("*", -1)}
+    for coverage, n in rows.values():
         assert 0.0 <= coverage <= 1.0
         # More than one name's holdout contributed: each eligible name has
         # exactly VALIDATION_YEARS (5) holdout points.

@@ -40,6 +40,14 @@ _Avoid_: Benchmark sweep, rolling test origins, evaluation slice
 One of four rank-based frequency brackets (`top100`, `top1000`, `top5000`, `rest`) defined within an origin year, used to stratify evaluation, acceptance rules, and conformal interval calibration.
 _Avoid_: Rank bracket, frequency bucket, volume tier
 
+**Volatility Bin**:
+One of three tertile brackets of a name's recent year-to-year log wobble, cut from the wobble present in the origin year being calibrated, used as the second axis of a conformal band's calibration stratum.
+_Avoid_: Variance bucket, noise band, stability class
+
+**Calibration Stratum**:
+The `(popularity tier, volatility bin)` cell a name-origin falls into: the unit a conformal band's residual quantiles are estimated from, its achieved coverage is measured over, and the API reports back. A cell with too few observed outcomes borrows the whole population's band rather than estimating a tail of its own.
+_Avoid_: Cohort, segment, calibration group
+
 **Training Window**:
 The bounded span of recent origin years (currently the most recent 40) a pooled fit may learn from; rows from earlier origins are discarded rather than down-weighted.
 _Avoid_: Lookback, recency decay, training horizon

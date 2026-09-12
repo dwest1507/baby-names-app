@@ -66,13 +66,21 @@ export interface Validation {
 
 export interface CalibrationLevel {
   nominal: number
+  // The stratum this coverage was measured over: the popularity tier and
+  // volatility bin of the names it describes. `'*'` / -1 is the
+  // whole-population fallback, served only for a name whose own stratum the
+  // backtest never populated.
+  tier: string
+  volatility_bin: number
   empirical_coverage: number
   n: number
 }
 
-// Keyed by nominal level as a string ("0.8", "0.95"). Measured across every
-// eligible name's holdout backtest by the precompute batch — see
-// docs/adr/0005-truthful-confidence-intervals.md. The shaded bands must be
+// Keyed by nominal level as a string ("0.8", "0.95"). Each row is the coverage
+// the batch measured for names in *this* name's stratum, across every eligible
+// name's holdout backtest — not a population average, which is exactly what
+// conceals a badly calibrated tail. See
+// docs/adr/0011-conformal-bands-keyed-by-strata.md. The shaded bands must be
 // labelled with `empirical_coverage`, not `nominal`.
 export type Calibration = Record<string, CalibrationLevel>
 

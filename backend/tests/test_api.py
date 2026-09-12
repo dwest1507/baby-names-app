@@ -1,4 +1,5 @@
 import re
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -101,7 +102,7 @@ def test_forecast():
 def test_forecast_validation_carries_skill_against_naive_persistence():
     # Skill compares the model's holdout MAE against a naive baseline that
     # simply repeats the last training-observed value. See
-    # docs/adr/0005-truthful-confidence-intervals.md.
+    # docs/adr/0011-conformal-bands-keyed-by-strata.md.
     response = client.get("/api/names/emma/forecast", params={"sex": "F"})
     assert response.status_code == 200
     skill = response.json()["validation"]["skill"]
@@ -112,7 +113,8 @@ def test_forecast_validation_carries_skill_against_naive_persistence():
 def test_forecast_carries_measured_interval_calibration():
     # The published bands must be labelled with the coverage they actually
     # achieve, measured across every eligible name's holdout backtest — not
-    # the nominal level. See docs/adr/0005-truthful-confidence-intervals.md.
+    # the nominal level. See
+    # docs/adr/0011-conformal-bands-keyed-by-strata.md.
     response = client.get("/api/names/emma/forecast", params={"sex": "F"})
     assert response.status_code == 200
     calibration = response.json()["calibration"]
@@ -124,12 +126,43 @@ def test_forecast_carries_measured_interval_calibration():
         assert entry["n"] > 5
 
 
-def test_forecast_calibration_is_absent_when_there_is_no_forecast():
-    response = client.get("/api/names/debra/forecast", params={"sex": "F"})
+def test_forecast_calibration_names_the_stratum_it_describes():
+    """The figure served says which names it was measured over.
+
+    Without that the response is a bare percentage again, and a
+    whole-population fallback is indistinguishable from a measurement of this
+    name's own cell.
+    """
+    response = client.get("/api/names/emma/forecast", params={"sex": "F"})
     assert response.status_code == 200
-    body = response.json()
-    assert body["forecast"] == []
-    assert body["calibration"] is None
+    calibration = response.json()["calibration"]
+
+    for entry in calibration.values():
+        assert entry["tier"] in ("top100", "top1000", "top5000", "rest", "*")
+        assert entry["volatility_bin"] >= -1
+
+
+def test_forecast_calibration_describes_this_names_own_stratum(use_stratified_db):
+    """Two names in different strata are given different coverage rows.
+
+    This is the whole point of keying `calibration` by stratum: handing every
+    name one aggregate is what let a good population average conceal a badly
+    calibrated tail. The sample database is too small for any cell to earn a
+    band of its own, so this runs against a corpus where they do — see the
+    `stratified_db` fixture.
+    """
+    rows = {}
+    for name in ("name0000", "name0300", "name0629", "name0001", "name0301"):
+        sex = "F" if int(name[-4:]) % 2 else "M"
+        body = client.get(f"/api/names/{name}/forecast", params={"sex": sex}).json()
+        assert body["forecast"], name
+        entry = body["calibration"]["0.8"]
+        rows[name] = (entry["tier"], entry["volatility_bin"], entry["empirical_coverage"])
+
+    strata = {(tier, b) for tier, b, _ in rows.values()}
+    assert len(strata) > 1, rows
+    assert ("*", -1) not in strata, rows
+    assert len({coverage for _, _, coverage in rows.values()}) > 1, rows
 
 
 def test_chat_unavailable_without_key(monkeypatch):
@@ -410,3 +443,42 @@ def test_forecast_survives_an_artifact_published_before_the_model_card(sample_db
     body = response.json()
     assert len(body["forecast"]) == 5
     assert body["model"] is None
+
+
+def test_a_forecast_from_an_artifact_that_predates_the_strata_still_serves(
+    sample_db, tmp_path, monkeypatch
+):
+    """The database is published independently of this code (ADR 0006).
+
+    So a deploy can meet an artifact built before `forecasts` carried a
+    stratum and before `calibration` was keyed by one. That should cost the
+    band label, exactly as an artifact without a `model_card` costs the model
+    panel — not the forecast, and not the endpoint.
+    """
+    from app import config, database
+
+    legacy = tmp_path / "legacy.db"
+    legacy.write_bytes(Path(sample_db).read_bytes())
+    conn = sqlite3.connect(str(legacy))
+    conn.execute("ALTER TABLE forecasts DROP COLUMN tier")
+    conn.execute("ALTER TABLE forecasts DROP COLUMN volatility_bin")
+    conn.execute("DROP TABLE calibration")
+    conn.execute(
+        "CREATE TABLE calibration (nominal_level REAL NOT NULL PRIMARY KEY, "
+        "empirical_coverage REAL NOT NULL, n INTEGER NOT NULL)"
+    )
+    conn.execute("INSERT INTO calibration VALUES (0.8, 0.44, 45)")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(config, "NAMES_DB_PATH", str(legacy))
+    database.resolve_database_path.cache_clear()
+    try:
+        response = client.get("/api/names/emma/forecast", params={"sex": "F"})
+    finally:
+        database.resolve_database_path.cache_clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["forecast"]
+    assert body["calibration"] == {}

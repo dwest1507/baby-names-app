@@ -67,6 +67,18 @@ Browser → Next.js (:3000) → /api/[...path]/route.ts (proxy) → FastAPI (:80
   and `scikit-learn` are dev-group dependencies and never reach the runtime image.
   `backend/app/services/forecast.py` holds only what the request path uses — the ADR 0001
   eligibility rule and the response composer, which fits nothing.
+- The shaded bands are conformal, not model-derived: `pooled.strata_bands` takes the quantiles
+  of the fit's own five-year log residuals within each `(popularity tier, volatility bin)`
+  stratum, so a volatile name gets a wider band than a steady one at the same rank. A stratum
+  with fewer than `MIN_STRATUM_ROWS` observed outcomes uses the whole population's band instead,
+  and its holdout is counted into the population's coverage rather than publishing an estimate
+  of its own — `pooled.band_stratum` is the one place that decides which. The `calibration` table
+  is keyed by `(nominal_level, tier, volatility_bin)`, `forecasts.tier`/`volatility_bin` record
+  the stratum each name is served under, and the API returns only the row matching it, so the
+  chart labels a band with the coverage measured for names like this one. Tier is read at the
+  row's own origin (`stream_series` carries a rank per year), which is what makes a historical
+  backtest tier by historical ranks and serving tier by the newest year's. See
+  `docs/adr/0011-conformal-bands-keyed-by-strata.md`.
 - `backend/scripts/forecast/arima.py` is the frozen previous pipeline. Nothing in the batch
   calls it; `research/forecasting/methods.py` imports it so rounds 1-6 of the benchmark stay
   reproducible, which is why `statsmodels` and `scipy` remain dev-group dependencies.

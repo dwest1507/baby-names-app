@@ -83,9 +83,21 @@ const MODEL_CARD = {
 function fullForecast(
   name: string,
   history: NameRow[],
-  overrides: { skill?: number; empirical80?: number; empirical95?: number } = {}
+  overrides: {
+    skill?: number
+    empirical80?: number
+    empirical95?: number
+    tier?: string
+    volatilityBin?: number
+  } = {}
 ) {
-  const { skill = 0.25, empirical80 = 0.44, empirical95 = 0.51 } = overrides
+  const {
+    skill = 0.25,
+    empirical80 = 0.44,
+    empirical95 = 0.51,
+    tier = 'top100',
+    volatilityBin = 1,
+  } = overrides
   return {
     name,
     sex: 'F' as const,
@@ -106,9 +118,24 @@ function fullForecast(
       points: [{ year: 2021, actual: 0.002, predicted: 0.0021 }],
     },
     model: MODEL_CARD,
+    // Coverage is measured per stratum, so the row a name carries is the one
+    // for its own popularity tier and volatility bin — not a population
+    // average. See docs/adr/0011-conformal-bands-keyed-by-strata.md.
     calibration: {
-      '0.8': { nominal: 0.8, empirical_coverage: empirical80, n: 45 },
-      '0.95': { nominal: 0.95, empirical_coverage: empirical95, n: 45 },
+      '0.8': {
+        nominal: 0.8,
+        tier,
+        volatility_bin: volatilityBin,
+        empirical_coverage: empirical80,
+        n: 45,
+      },
+      '0.95': {
+        nominal: 0.95,
+        tier,
+        volatility_bin: volatilityBin,
+        empirical_coverage: empirical95,
+        n: 45,
+      },
     },
   }
 }
@@ -314,6 +341,33 @@ describe('SearchPage interval labels', () => {
     expect(screen.queryByText(/80% interval/i)).toBeNull()
     expect(await screen.findByText(/51% interval/i)).toBeTruthy()
     expect(await screen.findByText(/44% interval/i)).toBeTruthy()
+  })
+
+  it('reports the coverage measured for this name\u2019s own stratum', async () => {
+    // Two names at the same popularity tier but in different volatility bins
+    // carry different calibration rows, because the bands they were given
+    // were built from different residuals. The legend has to follow the row
+    // it was handed rather than any single figure, or the whole point of
+    // keying calibration by stratum is lost between the API and the chart.
+    const years = Array.from({ length: 15 }, (_, i) => 2010 + i)
+    const history = historyFor('Olivia', years)
+    getNameHistory.mockResolvedValue({ name: 'Olivia', sex: 'F', history })
+    getNameForecast.mockResolvedValue(
+      fullForecast('Olivia', history, {
+        tier: 'top100',
+        volatilityBin: 2,
+        empirical80: 0.79,
+        empirical95: 0.94,
+      })
+    )
+
+    await search('Olivia')
+
+    await screen.findByLabelText(/trend and forecast for Olivia/i)
+    expect(await screen.findByText(/79% interval/i)).toBeTruthy()
+    expect(await screen.findByText(/94% interval/i)).toBeTruthy()
+    expect(screen.queryByText(/44% interval/i)).toBeNull()
+    expect(screen.queryByText(/51% interval/i)).toBeNull()
   })
 })
 

@@ -28,9 +28,11 @@ they are used for:
   the search page shows.
 * `calibration` — five years earlier again, so the spread of *its* errors can
   set the published bands without those bands having seen the holdout they are
-  then measured on. Coverage in the `calibration` table is therefore an
-  out-of-sample measurement, which is the whole point of
-  docs/adr/0005-truthful-confidence-intervals.md.
+  then measured on. The bands are built per `(popularity tier, volatility
+  bin)` and their coverage is measured over the same cells, so the figure in
+  the `calibration` table is out-of-sample *and* describes names like the one
+  being looked at rather than the average name. See
+  docs/adr/0011-conformal-bands-keyed-by-strata.md.
 
 Usage: uv run python scripts/precompute_forecasts.py [db_path] [--threads N]
 """
@@ -74,20 +76,36 @@ DEFAULT_DB = str(REPO_ROOT / "data" / "names.built.db")
 LEVELS = (0.8, 0.95)
 
 
-def _ensure_schema(conn) -> None:
-    """Create the batch's tables, widening an older `forecasts` if needed.
+def _columns(conn, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
 
-    `CREATE TABLE IF NOT EXISTS` is a no-op against a `forecasts` table built
-    before coverage was stored per name, so an artifact from an earlier run
-    would keep its three columns and fail the insert.
+
+def _ensure_schema(conn) -> None:
+    """Create the batch's tables, widening older ones where they are narrower.
+
+    `CREATE TABLE IF NOT EXISTS` is a no-op against a table built before a
+    column existed, so an artifact from an earlier run would keep its old
+    shape and fail the insert. `forecasts` is widened in place because its
+    rows are keyed by name and the batch replaces them; `calibration` is
+    dropped and rebuilt instead, because its *key* changed — every run
+    recomputes the whole table from `forecasts` anyway, so there is nothing in
+    it to preserve.
     """
     conn.execute(db_schema.CREATE_FORECASTS_TABLE)
-    conn.execute(db_schema.CREATE_CALIBRATION_TABLE)
     conn.execute(db_schema.CREATE_MODEL_CARD_TABLE)
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(forecasts)")}
-    for column in ("coverage_hits", "coverage_n"):
-        if column not in existing:
-            conn.execute(f"ALTER TABLE forecasts ADD COLUMN {column} TEXT")
+    for column, kind in (
+        ("coverage_hits", "TEXT"),
+        ("coverage_n", "TEXT"),
+        ("tier", "TEXT"),
+        ("volatility_bin", "INTEGER"),
+    ):
+        if column not in _columns(conn, "forecasts"):
+            conn.execute(f"ALTER TABLE forecasts ADD COLUMN {column} {kind}")
+
+    existing = _columns(conn, "calibration")
+    if existing and existing != set(db_schema.CALIBRATION_COLUMNS):
+        conn.execute("DROP TABLE calibration")
+    conn.execute(db_schema.CREATE_CALIBRATION_TABLE)
 
 
 def _fit(series, origin: int, note, threads: int):
@@ -112,7 +130,22 @@ def _fit(series, origin: int, note, threads: int):
     return rows, predicted, len(training)
 
 
-def _validation(row, predicted: np.ndarray, offsets: dict) -> dict | None:
+def _coverage_key(level, stratum) -> str:
+    """`"0.8|top100|1"` — the cell a name's holdout points are counted into.
+
+    Flattened into a string because it is stored as a JSON object key on the
+    name's row; `_calibration_cell` reads it back.
+    """
+    tier, bin_index = stratum
+    return f"{level}|{tier}|{bin_index}"
+
+
+def _calibration_cell(key: str) -> tuple[float, str, int]:
+    level, tier, bin_index = key.split("|")
+    return float(level), tier, int(bin_index)
+
+
+def _validation(row, predicted: np.ndarray, bands: dict, stratum) -> dict | None:
     """Score one name's five-year holdout, and record what its bands covered.
 
     `skill` compares the model's holdout MAE against a naive/persistence
@@ -121,9 +154,12 @@ def _validation(row, predicted: np.ndarray, offsets: dict) -> dict | None:
     the model does no better than assuming nothing changes, negative means
     worse.
 
-    `coverage` is this name's contribution to the population coverage figure;
-    `_split_coverage` lifts it out before the payload is stored, so it never
-    reaches the API.
+    `coverage` is this name's contribution to the coverage figure for the cell
+    whose band it was given — and `stratum` is the one it was in *at the
+    holdout origin*, not the one it is served under, because what is being
+    measured is how the bands performed for the names that were in that cell
+    then. `_split_coverage` lifts it out before the payload is stored, so it
+    never reaches the API.
     """
     if any(value is None for value in row["actual"]):
         return None
@@ -134,12 +170,16 @@ def _validation(row, predicted: np.ndarray, offsets: dict) -> dict | None:
     naive_mae = float(np.mean(np.abs(actual - row["last"])))
 
     coverage = {}
-    for level, level_offsets in offsets.items():
+    for level in bands:
+        offsets = pooled.band_for(bands, level, stratum)
         flags = []
         for horizon, value in enumerate(predicted):
-            low, high = pooled.apply_band(float(value), level_offsets, horizon)
+            low, high = pooled.apply_band(float(value), offsets, horizon)
             flags.append(bool(low <= actual[horizon] <= high))
-        coverage[level] = flags
+        # Counted into the cell whose band this name was handed, not into its
+        # own — a stratum too thin to earn a band must not publish a coverage
+        # figure for one. See `pooled.band_stratum`.
+        coverage[_coverage_key(level, pooled.band_stratum(bands, level, stratum))] = flags
 
     return {
         "mae": mae,
@@ -177,6 +217,14 @@ def _calibrate(conn) -> dict[str, float]:
     Deliberately a function of the table's contents rather than of whatever
     this invocation happened to fit, so the published coverage always
     describes the whole stored population.
+
+    One row per `(level, stratum)` that the holdout actually populated, where
+    a stratum is the cell whose *band* those names were given — so a row
+    always reports the coverage of a band the names behind it held, and a
+    stratum too thin to earn a band contributes to the `GLOBAL_STRATUM` row
+    instead of publishing an estimate of its own. Returns the pooled coverage
+    per level, which is the headline figure the CLI prints and is not stored:
+    it describes no single band, so no name should ever be shown it.
     """
     hits: dict[str, int] = defaultdict(int)
     counts: dict[str, int] = defaultdict(int)
@@ -184,21 +232,28 @@ def _calibrate(conn) -> dict[str, float]:
         "SELECT coverage_hits, coverage_n FROM forecasts "
         "WHERE coverage_hits IS NOT NULL AND coverage_n IS NOT NULL"
     ):
-        for level, value in json.loads(stored_hits).items():
-            hits[level] += value
-        for level, value in json.loads(stored_counts).items():
-            counts[level] += value
+        for key, value in json.loads(stored_hits).items():
+            hits[key] += value
+        for key, value in json.loads(stored_counts).items():
+            counts[key] += value
 
+    pooled_hits: dict[float, int] = defaultdict(int)
+    pooled_counts: dict[float, int] = defaultdict(int)
     conn.execute("DELETE FROM calibration")
-    calibration = {}
-    for level, n in counts.items():
-        empirical = hits[level] / n if n else 0.0
-        calibration[level] = empirical
+    for key, n in sorted(counts.items()):
+        level, tier, bin_index = _calibration_cell(key)
+        pooled_hits[level] += hits[key]
+        pooled_counts[level] += n
         conn.execute(
-            "INSERT INTO calibration (nominal_level, empirical_coverage, n) VALUES (?, ?, ?)",
-            (float(level), empirical, n),
+            "INSERT INTO calibration "
+            "(nominal_level, tier, volatility_bin, empirical_coverage, n) VALUES (?, ?, ?, ?, ?)",
+            (level, tier, bin_index, hits[key] / n if n else 0.0, n),
         )
-    return calibration
+
+    return {
+        str(level): pooled_hits[level] / n if n else 0.0
+        for level, n in sorted(pooled_counts.items())
+    }
 
 
 def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
@@ -224,13 +279,22 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
 
         note("Calibrating bands on the errors of an earlier origin...")
         cal_rows, cal_predicted, _ = _fit(series, calibration_origin, note, threads)
-        offsets = pooled.band_offsets(pooled.log_residuals(cal_rows, cal_predicted), LEVELS)
+        # The volatility bin edges are tertiles of the wobble present at this
+        # origin, and they are fixed here and reused at the two later ones, so
+        # that "bin 2" means the same thing whether a name is being
+        # calibrated, scored, or served.
+        edges = pooled.volatility_edges(cal_rows)
+        bands = pooled.strata_bands(cal_rows, cal_predicted, LEVELS, edges)
+        note(
+            f"  {len(bands[str(LEVELS[0])]) - 1} of "
+            f"{len(pooled.TIERS) * pooled.VOLATILITY_BINS} strata measured on their own errors"
+        )
         del cal_rows, cal_predicted
 
         note("Scoring the five-year holdout...")
         hold_rows, hold_predicted, _ = _fit(series, holdout_origin, note, threads)
         validations = {
-            row["key"]: _validation(row, hold_predicted[i], offsets)
+            row["key"]: _validation(row, hold_predicted[i], bands, pooled.row_stratum(row, edges))
             for i, row in enumerate(hold_rows)
         }
         del hold_rows, hold_predicted
@@ -241,12 +305,17 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
         conn.execute("DELETE FROM forecasts")
         for i, row in enumerate(rows):
             name, sex = row["key"].rsplit("|", 1)
+            # The stratum this name is served under: its rank and its wobble
+            # in the newest observed year. It decides both how wide the band
+            # it is given is, and which measured coverage the chart may label
+            # that band with.
+            tier, volatility_bin = pooled.row_stratum(row, edges)
             stored = {
                 "forecast": [
                     {
                         "year": int(production_origin + horizon + 1),
                         "mean": float(value),
-                        **_band_fields(float(value), offsets, horizon),
+                        **_band_fields(float(value), bands, (tier, volatility_bin), horizon),
                     }
                     for horizon, value in enumerate(predicted[i])
                 ],
@@ -255,8 +324,17 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
             hits, counts = _split_coverage(stored)
             conn.execute(
                 "INSERT OR REPLACE INTO forecasts "
-                "(name, sex, payload, coverage_hits, coverage_n) VALUES (?, ?, ?, ?, ?)",
-                (name, sex, json.dumps(stored), json.dumps(hits), json.dumps(counts)),
+                "(name, sex, payload, coverage_hits, coverage_n, tier, volatility_bin) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    name,
+                    sex,
+                    json.dumps(stored),
+                    json.dumps(hits),
+                    json.dumps(counts),
+                    tier,
+                    volatility_bin,
+                ),
             )
 
         calibration = _calibrate(conn)
@@ -287,15 +365,15 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
     }
 
 
-def _band_fields(value: float, offsets: dict, horizon: int) -> dict[str, float]:
-    """The two published bands around one forecast point.
+def _band_fields(value: float, bands: dict, stratum, horizon: int) -> dict[str, float]:
+    """The two published bands around one forecast point, for this name's stratum.
 
     Both edges are the point times a positive multiplier, so neither can reach
     below zero — which is why the pipeline no longer clamps anything at zero.
     """
     fields = {}
     for level, key in ((0.8, "80"), (0.95, "95")):
-        low, high = pooled.apply_band(value, offsets[str(level)], horizon)
+        low, high = pooled.apply_band(value, pooled.band_for(bands, level, stratum), horizon)
         fields[f"lo{key}"] = low
         fields[f"hi{key}"] = high
     return fields

@@ -310,7 +310,7 @@ export default function SearchPage() {
                   </div>
                   {/* Skill compares the holdout error against a naive baseline
                       that just repeats the last observed value — see
-                      docs/adr/0005-truthful-confidence-intervals.md. A
+                      docs/adr/0011-conformal-bands-keyed-by-strata.md. A
                       forecast that loses to that baseline is flagged rather
                       than shown with equal confidence. */}
                   <div className="mt-4">

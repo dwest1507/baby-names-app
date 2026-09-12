@@ -14,11 +14,11 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: 'Baby Names Explorer',
   description:
-    'Explore 145 years of baby name popularity from the Social Security Administration dataset — trends, ARIMA forecasts, and an AI chatbot that answers questions in natural language.',
+    'Explore 145 years of baby name popularity from the Social Security Administration dataset — trends, pooled-model forecasts, and an AI chatbot that answers questions in natural language.',
   openGraph: {
     title: 'Baby Names Explorer',
     description:
-      'Explore 145 years of baby name popularity — trends, ARIMA forecasts, and an AI chatbot.',
+      'Explore 145 years of baby name popularity — trends, pooled-model forecasts, and an AI chatbot.',
     type: 'website',
   },
 }

@@ -111,8 +111,11 @@ export default function TrendChart({ payload }: TrendChartProps) {
   // Bands must be labelled with the coverage they actually achieve — measured
   // by the precompute batch's holdout backtest across every eligible name —
   // not the nominal 80%/95% level, which the parent PRD found could overstate
-  // coverage by 24 points. Falls back to the nominal label only if calibration
-  // is missing entirely. See docs/adr/0005-truthful-confidence-intervals.md.
+  // coverage by 24 points. The row the payload carries is the one measured for
+  // *this* name's popularity tier and volatility bin, so the label follows it
+  // rather than any population figure. Falls back to the nominal label only if
+  // calibration is missing entirely. See
+  // docs/adr/0011-conformal-bands-keyed-by-strata.md.
   const intervalLabel = (nominal: '0.8' | '0.95'): string => {
     const measured = payload.calibration?.[nominal]?.empirical_coverage
     if (measured === undefined) return `${Math.round(Number(nominal) * 100)}% interval`

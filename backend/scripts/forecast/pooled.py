@@ -104,6 +104,35 @@ HYPERPARAMETERS = {
 WEIGHT_POWER = 0.5
 WEIGHT_CLIP = 50.0
 
+# The four rank brackets every evaluation, acceptance rule and band
+# calibration is broken down on (CONTEXT.md, "Popularity Tier"). Research has
+# reported every number this way since round 1, because the tiers behave
+# differently enough that a population average hides the tail: the ARIMA
+# pipeline these replaced scored +0.161 on the top 100 and -0.413 beyond rank
+# 5000.
+TIERS = ("top100", "top1000", "top5000", "rest")
+TIER_BOUNDS = ((100, "top100"), (1000, "top1000"), (5000, "top5000"))
+
+# The second axis of a calibration stratum. Two names at the same rank can
+# have very different futures: research found a band conditioned on tier alone
+# still under-covers the jumpy names and over-covers the steady ones, and
+# three bins is the coarsest split that separates them. The edges are tertiles
+# of the wobble actually present in the rows being calibrated, not fixed
+# thresholds — "volatile" is only meaningful relative to the corpus, and a
+# hardcoded cut can leave a bin empty on one database and holding everything
+# on another. See research/forecasting/conformal.py.
+VOLATILITY_BINS = 3
+
+# A stratum needs enough rows for a quantile of its residuals to mean
+# anything; below this it borrows the whole population's instead. Research's
+# threshold, unchanged.
+MIN_STRATUM_ROWS = 60
+
+# The stratum standing for "every name", used when a cell has too few
+# residuals of its own to estimate a tail from. Not a tier and not a bin, so
+# it cannot collide with a real stratum.
+GLOBAL_STRATUM = ("*", -1)
+
 # The growth cap reads its bound off the training outcomes rather than
 # inventing one: all but a thousandth of the five-year moves names actually
 # made. High enough that no ordinary forecast touches it, finite enough that a
@@ -128,12 +157,15 @@ SERIES_SQL = (
 
 
 def stream_series(conn):
-    """Yield one `(key, years, values, rank)` per name/sex, streaming.
+    """Yield one `(key, years, values, ranks)` per name/sex, streaming.
 
     `key` is `"name|sex"` with the name lowercased, matching how `forecasts`
-    is keyed and how the history lookup normalises. `rank` is the name's rank
-    in the last year it was observed, which for a name in current use is its
-    rank in the newest year the database holds.
+    is keyed and how the history lookup normalises. `ranks` runs alongside
+    `years`: the name's rank in each year it was observed, so a row built at
+    an origin can be tiered by the rank the name held *then*. A tier is a
+    property of an origin year rather than of the name (CONTEXT.md,
+    "Popularity Tier"), and a backtest that tiered 1995 rows by a 2025 rank
+    would credit each tier with the errors of a different set of names.
 
     Rows arrive grouped by the index, so a series is complete the moment the
     (name, sex) run ends and nothing more than the current run is ever held.
@@ -141,14 +173,14 @@ def stream_series(conn):
     current_key = None
     years: list[int] = []
     values: list[float] = []
-    rank = 0
+    ranks: list[int] = []
 
     def finished():
         return (
             current_key,
             np.array(years, dtype=np.int32),
             np.array(values, dtype=np.float64),
-            int(rank),
+            np.array(ranks, dtype=np.int32),
         )
 
     for name, sex, year, percent, name_rank in conn.execute(SERIES_SQL):
@@ -156,10 +188,13 @@ def stream_series(conn):
         if key != current_key:
             if current_key is not None:
                 yield finished()
-            current_key, years, values = key, [], []
+            current_key, years, values, ranks = key, [], [], []
         years.append(year)
         values.append(percent)
-        rank = name_rank or 0
+        # `popularity_rank` is nullable in the source; 0 carries "no rank
+        # recorded" onward, and `popularity_tier` is the one place that says
+        # what that means.
+        ranks.append(name_rank or 0)
 
     if current_key is not None:
         yield finished()
@@ -207,6 +242,43 @@ def features(log_train: np.ndarray) -> dict[str, float]:
     }
 
 
+def popularity_tier(rank: int) -> str:
+    """Which rank bracket a name sat in, at the origin the rank was read from.
+
+    A rank of zero or less means the source recorded no rank for that year.
+    That is an absence of measured popularity, not an extreme of it, so it
+    falls to the bottom bracket — where a bare `rank <= 100` comparison would
+    instead file it under `top100`, the one tier the deploy gate checks.
+    """
+    if rank <= 0:
+        return TIERS[-1]
+    for bound, tier in TIER_BOUNDS:
+        if rank <= bound:
+            return tier
+    return TIERS[-1]
+
+
+def volatility_edges(rows) -> list[float]:
+    """The tertile cuts of `vol` across `rows`, as `VOLATILITY_BINS - 1` edges.
+
+    Read once off the origin the bands are calibrated at and then reused at
+    every other origin, so a name's bin means the same thing whether it is
+    being calibrated, scored or served.
+    """
+    quantiles = np.arange(1, VOLATILITY_BINS) / VOLATILITY_BINS
+    vols = np.array([row["vol"] for row in rows], dtype=float)
+    return (
+        [float(edge) for edge in np.quantile(vols, quantiles)]
+        if len(vols)
+        else [0.0] * (VOLATILITY_BINS - 1)
+    )
+
+
+def volatility_bin(vol: float, edges) -> int:
+    """Which volatility bin a wobble of `vol` falls in: 0 is the steadiest."""
+    return int(np.searchsorted(np.asarray(edges, dtype=float), float(vol)))
+
+
 def build_rows(series, origins) -> list[dict]:
     """One row per (series, origin) the series was eligible to be forecast at.
 
@@ -219,7 +291,7 @@ def build_rows(series, origins) -> list[dict]:
     """
     origins = sorted(origins)
     rows = []
-    for key, years, values, rank in series:
+    for key, years, values, ranks in series:
         if len(years) < MIN_HISTORY_YEARS or years[-1] < origins[0]:
             continue
         future = {int(y): float(v) for y, v in zip(years, values, strict=True)}
@@ -236,7 +308,14 @@ def build_rows(series, origins) -> list[dict]:
             rows.append(
                 {
                     "key": key,
-                    "rank": rank,
+                    # The rank and the wobble as they stood at this origin:
+                    # together they are the row's calibration stratum, and
+                    # both have to be read at the origin rather than at the
+                    # end of the series. `vol` is the feature block's own
+                    # volatility, lifted out so the strata cannot come to
+                    # disagree with what the model reads.
+                    "rank": int(ranks[observed][-1]),
+                    "vol": feature_row["vol"],
                     "origin": int(origin),
                     "x": np.array([feature_row[name] for name in FEATURES]),
                     "y": target,
@@ -322,6 +401,16 @@ def predict(models, rows) -> np.ndarray:
     return np.exp(growth) * last[:, None]
 
 
+def observed_rows(rows) -> list[int]:
+    """Indices of the rows whose whole five-year outcome has been observed.
+
+    The caps, the residuals and the band strata all have to agree about which
+    rows have an outcome, so they all ask here rather than each re-deriving
+    it.
+    """
+    return [i for i, row in enumerate(rows) if all(v is not None for v in row["actual"])]
+
+
 def growth_caps(rows, quantile: float = CAP_QUANTILE) -> np.ndarray:
     """Per-horizon bound on |log(forecast / origin share)|, from observed moves.
 
@@ -329,7 +418,7 @@ def growth_caps(rows, quantile: float = CAP_QUANTILE) -> np.ndarray:
     about how far a name moves in five years, so the others are left out
     rather than floored into the quantile.
     """
-    observed = [row for row in rows if all(value is not None for value in row["actual"])]
+    observed = [rows[i] for i in observed_rows(rows)]
     if not observed:
         return np.full(H, np.inf)
     actual = np.maximum(np.array([row["actual"] for row in observed], dtype=float), FLOOR)
@@ -432,28 +521,97 @@ def point_forecasts(models, rows, caps: np.ndarray) -> np.ndarray:
 
 
 def log_residuals(rows, predicted: np.ndarray) -> np.ndarray:
-    """`log(actual) - log(predicted)` for rows whose outcome is fully observed."""
-    complete = [i for i, row in enumerate(rows) if all(v is not None for v in row["actual"])]
+    """`log(actual) - log(predicted)`, one row per fully observed outcome.
+
+    Aligned with `observed_rows(rows)`, not with `rows`: a row whose five-year
+    window ran off the end of its series has no error to report.
+    """
+    complete = observed_rows(rows)
     if not complete:
         return np.zeros((0, H))
     actual = np.array([rows[i]["actual"] for i in complete], dtype=float)
     return np.log(np.maximum(actual, FLOOR)) - np.log(np.maximum(predicted[complete], FLOOR))
 
 
-def band_offsets(residuals: np.ndarray, levels) -> dict[str, list[list[float]]]:
-    """Two-sided log-residual quantiles per horizon, one pair per level.
+def band_offsets(residuals: np.ndarray, level: float) -> list[list[float]]:
+    """Two-sided log-residual quantiles per horizon, as `[low, high]` pairs.
 
     The band a forecast carries is the spread this model's own errors actually
     had, not a spread implied by a distributional assumption it never
     verified. Applying the offsets multiplicatively keeps both edges positive.
     """
-    offsets = {}
+    tail = (1 - level) / 2
+    low = np.quantile(residuals, tail, axis=0)
+    high = np.quantile(residuals, 1 - tail, axis=0)
+    return [[float(lo), float(hi)] for lo, hi in zip(low, high, strict=True)]
+
+
+def row_stratum(row, edges) -> tuple[str, int]:
+    """The calibration stratum a row belongs to: `(tier, volatility bin)`.
+
+    Both halves are read at the row's own origin, so the same function serves
+    the historical backtest (tiering a 2015 row by its 2015 rank) and serving
+    (tiering a production row by its rank in the newest observed year).
+    """
+    return (popularity_tier(row["rank"]), volatility_bin(row["vol"], edges))
+
+
+def strata_bands(rows, predicted: np.ndarray, levels, edges, min_rows=MIN_STRATUM_ROWS) -> dict:
+    """Band offsets per `(level, stratum)`, from the errors this fit made.
+
+    Returns `{level_str: {stratum: offsets}}`, always including
+    `GLOBAL_STRATUM`. A stratum appears in its own right only once it has
+    `min_rows` observed outcomes behind it; `band_for` falls back to the
+    global band for the rest, because a tail estimated from six residuals is
+    a confidently wrong band rather than a conditioned one.
+
+    Conditioning is the whole point: a single population band has one width
+    for every name, so it is necessarily too wide for the predictable ones
+    and too narrow for the rest — and the second failure is the one that
+    matters, since it draws a confident band around a forecast nobody should
+    be confident about. See
+    docs/adr/0011-conformal-bands-keyed-by-strata.md.
+    """
+    residuals = log_residuals(rows, predicted)
+    if not len(residuals):
+        # A band is a measurement of errors that happened. At an origin whose
+        # five-year window has not closed there are none, and the honest
+        # answer is to say so rather than to publish a band of zero width.
+        raise ValueError(
+            f"no observed outcomes to calibrate bands from at "
+            f"origin {rows[0]['origin'] if rows else '?'}: the five-year window "
+            "has not closed yet"
+        )
+    groups: dict[tuple[str, int], list[int]] = {}
+    for position, index in enumerate(observed_rows(rows)):
+        groups.setdefault(row_stratum(rows[index], edges), []).append(position)
+
+    bands: dict[str, dict[tuple[str, int], list[list[float]]]] = {}
     for level in levels:
-        tail = (1 - level) / 2
-        low = np.quantile(residuals, tail, axis=0)
-        high = np.quantile(residuals, 1 - tail, axis=0)
-        offsets[str(level)] = [[float(lo), float(hi)] for lo, hi in zip(low, high, strict=True)]
-    return offsets
+        bands[str(level)] = {GLOBAL_STRATUM: band_offsets(residuals, level)}
+        for stratum, positions in groups.items():
+            if len(positions) >= min_rows:
+                bands[str(level)][stratum] = band_offsets(residuals[positions], level)
+    return bands
+
+
+def band_stratum(bands: dict, level, stratum) -> tuple[str, int]:
+    """The stratum whose band a name in `stratum` actually receives.
+
+    Itself where it earned one, `GLOBAL_STRATUM` where it did not. Coverage is
+    counted into *this* cell rather than into the name's own, so a published
+    figure always describes the band the names behind it were given — and so a
+    thin cell cannot publish a coverage estimate from a handful of points,
+    which is the defect ADR 0005 refused to paper over.
+    """
+    stratum = tuple(stratum)
+    return stratum if stratum in bands[str(level)] else GLOBAL_STRATUM
+
+
+def band_for(bands: dict, level, stratum) -> list[list[float]]:
+    """The offsets a name in `stratum` gets, global where it has none of its own."""
+    at_level = bands[str(level)]
+    return at_level[band_stratum(bands, level, stratum)]
 
 
 def apply_band(value: float, offsets: list[list[float]], horizon: int) -> tuple[float, float]:

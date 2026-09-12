@@ -209,6 +209,9 @@ else moves:
 - **`lightgbm` and `scikit-learn` join the dev/batch group.** They are absent from the runtime
   image for the same reason `statsmodels` is, and `tests/test_runtime_dependencies.py` blocks all
   four at import and runs the app for real.
+- **`numpy` follows them.** It is not a fitting library, but the only code that used it was the
+  fitting: the request path reads a stored JSON blob and composes a response from it, so nothing
+  it touches is an array. It moves to the same group and is blocked by the same test.
 - **`pebble` is no longer used by the batch.** It stays a declared dependency for now; removing it
   is a separate change.
 - **ARIMA stays in the tree.** `scripts/forecast/arima.py` is no longer reachable from the batch,

@@ -10,6 +10,10 @@ app for real. See docs/adr/0004-forecasts-as-a-build-artifact.md.
 model runs only in the offline batch (`scripts/forecast/pooled.py`), which the
 Dockerfile never copies. See
 docs/adr/0010-a-pooled-model-replaces-per-name-arima.md.
+
+`numpy` is on it too, and is the one that is not a fitting library: the request
+path reads stored JSON and composes a response from it, so nothing it touches
+is an array. Once the fitting moved to the batch, numpy moved with it.
 """
 
 import subprocess
@@ -19,12 +23,13 @@ from pathlib import Path
 
 BACKEND = Path(__file__).parent.parent
 
-# Refuses the fitting libraries and their submodules the way a container that
-# never installed them would, then exercises the request path's module graph.
+# Refuses the batch-only libraries and their submodules the way a container
+# that never installed them would, then exercises the request path's module
+# graph.
 BLOCKED = """
 import sys
 
-BANNED = ("statsmodels", "scipy", "lightgbm", "sklearn")
+BANNED = ("statsmodels", "scipy", "lightgbm", "sklearn", "numpy")
 
 
 class Blocker:
@@ -81,3 +86,4 @@ def test_the_fitting_libraries_are_not_runtime_dependencies():
     assert "scipy" not in runtime
     assert "lightgbm" not in runtime
     assert "scikit-learn" not in runtime
+    assert "numpy" not in runtime

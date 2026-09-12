@@ -537,7 +537,7 @@ class BacktestTally:
     """
 
     def __init__(self):
-        self._names: dict[str, list[float]] = {}
+        self._names: dict[str, tuple[float, int]] = {}
         self._tier_errors: dict[str, np.ndarray] = {tier: np.zeros(2) for tier in TIERS}
         self._tier_skills: dict[str, list[float]] = {tier: [] for tier in TIERS}
         self._tier_origins: dict[str, set[int]] = {tier: set() for tier in TIERS}

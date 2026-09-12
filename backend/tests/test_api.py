@@ -444,7 +444,6 @@ def test_forecast_survives_an_artifact_published_before_the_model_card(sample_db
     and the page already renders without the panel.
     """
     import shutil
-    import sqlite3
 
     from app import config, database
 

@@ -7,6 +7,7 @@ docs/adr/0003-observed-rows-only.md.
 """
 
 import json
+import sqlite3
 
 from .. import database
 
@@ -97,6 +98,29 @@ def get_calibration() -> dict[str, dict]:
             }
             for row in rows
         }
+    finally:
+        conn.close()
+
+
+def get_model_card() -> dict | None:
+    """What produced the forecasts: the model, its training set, its features.
+
+    One pooled model forecasts every name (see
+    docs/adr/0010-a-pooled-model-replaces-per-name-arima.md), so this is a
+    single row rather than something stored per name.
+
+    None when the batch has not run against this artifact — including when the
+    table does not exist at all. The database is published independently of
+    this code (ADR 0006), so a deploy can meet an artifact built before
+    `model_card` existed; that should cost the model panel, not the whole
+    forecast endpoint.
+    """
+    conn = database.connect()
+    try:
+        row = conn.execute("SELECT payload FROM model_card WHERE id = 1").fetchone()
+        return json.loads(row["payload"]) if row else None
+    except sqlite3.OperationalError:
+        return None
     finally:
         conn.close()
 

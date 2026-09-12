@@ -1,6 +1,6 @@
 # Baby Names Explorer
 
-A web application serving 145 years of Social Security Administration (SSA) baby name data with trend charts, ARIMA forecasts, and a Groq-powered natural-language SQL chatbot.
+A web application serving 145 years of Social Security Administration (SSA) baby name data with trend charts, pooled-model popularity forecasts, and a Groq-powered natural-language SQL chatbot.
 
 ## Language
 

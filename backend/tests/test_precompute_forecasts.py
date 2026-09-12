@@ -2,21 +2,23 @@
 
 The batch is otherwise exercised only indirectly, through the `sample_db`
 session fixture in conftest.py. These cover the properties that fixture cannot
-assert: that fanning the work across processes does not change the result, and
-that the calibration aggregate is derived from the stored table rather than
-from whatever one invocation happened to fit.
+assert: that a published artifact is reproducible, that the extraction reads
+the index rather than sorting, that one fit serves every name, and that the
+coverage aggregate is derived from the stored table rather than from whatever
+one invocation happened to fit.
 """
 
 import json
 import sqlite3
+import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from scripts.forecast import pooled  # noqa: E402
 from scripts.make_sample_db import build  # noqa: E402
 from scripts.precompute_forecasts import run  # noqa: E402
 
@@ -52,139 +54,170 @@ def built(tmp_path_factory) -> str:
     return str(path)
 
 
-def test_workers_do_not_change_the_result(built, tmp_path):
-    """Parallelism is throughput only.
+def _copy(built: str, tmp_path, name: str) -> str:
+    target = tmp_path / name
+    target.write_bytes(Path(built).read_bytes())
+    return str(target)
 
-    Each name is fitted independently from its own history, so fanning out
-    must be bit-identical to running serially. This is the whole safety
-    argument for defaulting the CLI to every core, and it is why `run` keeps a
-    serial path rather than always constructing a pool.
+
+def test_two_runs_over_the_same_data_produce_identical_forecasts(built, tmp_path):
+    """A published artifact has to be reproducible.
+
+    Boosting subsamples rows and columns, and LightGBM builds its histograms
+    in parallel, so nothing about the fit is reproducible by default — it is
+    reproducible because the batch pins a seed and a thread count. Without
+    both, rebuilding the same database twice would publish two different sets
+    of numbers and there would be no way to tell a real model change from
+    noise.
+
+    Both runs go through the CLI, in separate processes. Calling `run` twice
+    in one process would pass even with a seed drawn at import time, since
+    both calls would draw the same one — it is exactly the run-to-run case
+    that `make precompute-forecasts` is, and the only one worth pinning.
     """
-    serial = tmp_path / "serial.db"
-    parallel = tmp_path / "parallel.db"
-    serial.write_bytes(Path(built).read_bytes())
-    parallel.write_bytes(Path(built).read_bytes())
+    first = _copy(built, tmp_path, "first.db")
+    second = _copy(built, tmp_path, "second.db")
 
-    serial_result = run(str(serial), workers=1)
-    parallel_result = run(str(parallel), workers=2)
+    for db in (first, second):
+        completed = subprocess.run(
+            [sys.executable, "scripts/precompute_forecasts.py", db, "--threads", "2"],
+            cwd=Path(__file__).parent.parent,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 0, completed.stderr
 
-    assert serial_result["eligible"] == parallel_result["eligible"]
-    assert serial_result["stored"] == parallel_result["stored"]
-    assert _forecasts(str(serial)) == _forecasts(str(parallel))
-    assert _calibration(str(serial)) == _calibration(str(parallel))
+    assert _forecasts(first) == _forecasts(second)
+    assert _calibration(first) == _calibration(second)
 
 
-def test_resume_skips_stored_names_but_still_calibrates_on_all_of_them(built, tmp_path):
-    """Calibration must describe the whole table, not just this run's names.
+def test_every_eligible_name_is_forecast_from_one_pooled_fit(built, tmp_path):
+    """One model, every name — not one model per name.
 
-    Coverage is a population statistic. When it was accumulated in memory
-    during the run, a resumed batch calibrated only on the names it happened
-    to refit — a non-random slice, since rows are written in name order — and
-    published a coverage figure that no longer described the data. Storing
-    each name's contribution and summing over the table is what removes that
-    failure mode, so this test pins it.
+    The count that matters is that the set of names stored is exactly the set
+    the eligibility rule admits at the newest year, produced without ever
+    looking at a name in isolation.
     """
-    db = tmp_path / "resume.db"
-    db.write_bytes(Path(built).read_bytes())
+    db = _copy(built, tmp_path, "pooled.db")
+    result = run(db)
 
-    full = run(str(db), workers=1)
-    assert full["stored"] > 1
-    expected = _calibration(str(db))
+    conn = sqlite3.connect(db)
+    try:
+        (newest,) = conn.execute("SELECT MAX(year) FROM names").fetchone()
+        eligible = {
+            (name.lower(), sex)
+            for name, sex in conn.execute(
+                "SELECT name, sex FROM names GROUP BY LOWER(name), sex "
+                "HAVING COUNT(*) >= 10 AND MAX(year) = ?",
+                (newest,),
+            )
+        }
+    finally:
+        conn.close()
 
-    # Drop one name so a resume has exactly one name left to do.
-    conn = sqlite3.connect(str(db))
-    victim = conn.execute("SELECT name, sex FROM forecasts ORDER BY name LIMIT 1").fetchone()
-    conn.execute("DELETE FROM forecasts WHERE name = ? AND sex = ?", victim)
-    conn.commit()
-    conn.close()
-
-    resumed = run(str(db), workers=1, resume=True)
-
-    assert resumed["eligible"] == 1
-    assert resumed["resumed_skips"] == full["stored"] - 1
-    assert _calibration(str(db)) == expected
+    assert eligible
+    assert set(_forecasts(db)) == eligible
+    assert result["stored"] == len(eligible)
+    assert result["origins"]["production"] == newest
 
 
-def test_a_name_that_exceeds_the_timeout_is_stored_as_no_forecast(built, tmp_path):
-    """Abandoning a name must land on an existing code path, not a new one.
+def test_extraction_reads_the_index_and_sorts_nothing(built):
+    """The whole feature build is one indexed pass over `names`.
 
-    A timeout stores nothing for that name, which is the same state an
-    ineligible name produces and which `forecast.build_response` already
-    renders as an empty forecast list.
+    `idx_names_name_sex_year` (ADR 0009) already stores rows in exactly the
+    order the extraction wants them, so SQLite can hand them back grouped and
+    ordered with no temporary B-tree and no sort file. Losing that — by
+    reordering the query, or by dropping the index — turns a sub-second scan
+    into a spill to disk on 11 million rows, which is the failure this pins.
     """
-    db = tmp_path / "timeout.db"
-    db.write_bytes(Path(built).read_bytes())
+    conn = sqlite3.connect(built)
+    try:
+        plan = "\n".join(row[3] for row in conn.execute(f"EXPLAIN QUERY PLAN {pooled.SERIES_SQL}"))
+    finally:
+        conn.close()
 
-    result = run(str(db), workers=1, timeout=1e-6)
-
-    assert result["eligible"] > 0
-    assert result["stored"] == 0
-    assert result["timed_out"] == result["eligible"]
-    assert _forecasts(str(db)) == {}
-    assert _calibration(str(db)) == {}
+    assert "idx_names_name_sex_year" in plan, plan
+    assert "TEMP B-TREE" not in plan, plan
 
 
-def test_a_runaway_fit_is_killed_rather_than_asked_to_stop(built, tmp_path, monkeypatch):
-    """The cap must survive code that never returns to the interpreter.
+def test_forecasts_cover_only_years_that_have_not_happened_yet(built, tmp_path):
+    """2025 is history, not a forecast point.
 
-    An in-process alarm cannot do this: `signal.setitimer` is only delivered
-    between bytecode instructions, so a fit spinning inside compiled
-    statsmodels code never handles it. Simulating that here with a fit that
-    ignores signals entirely is what distinguishes a real timeout from one
-    that merely appears to work on well-behaved input.
+    The artifact this replaces carried forecasts for 2025-2029 produced before
+    2025 was observed, so the search chart held two different values for 2025
+    and the forecast overwrote the record. A forecast must start the year
+    after the newest observation.
     """
-    import scripts.precompute_forecasts as module
+    db = _copy(built, tmp_path, "years.db")
+    run(db)
 
-    def _uninterruptible(history):
-        import signal as _signal
+    conn = sqlite3.connect(db)
+    try:
+        (newest,) = conn.execute("SELECT MAX(year) FROM names").fetchone()
+    finally:
+        conn.close()
 
-        _signal.signal(_signal.SIGALRM, _signal.SIG_IGN)
-        time.sleep(30)
-        raise AssertionError("worker should have been killed")
-
-    monkeypatch.setattr(module, "_fit_one", _uninterruptible)
-
-    db = tmp_path / "runaway.db"
-    db.write_bytes(Path(built).read_bytes())
-
-    started = time.monotonic()
-    result = module.run(str(db), workers=2, timeout=1.0)
-    elapsed = time.monotonic() - started
-
-    assert result["stored"] == 0
-    assert result["timed_out"] == result["eligible"]
-    assert _forecasts(str(db)) == {}
-    # Each name costs about the timeout, not the full 30s sleep.
-    assert elapsed < 5 + result["eligible"], f"runaways were not killed ({elapsed:.1f}s)"
+    stored = _forecasts(db)
+    assert stored
+    for payload in stored.values():
+        years = [point["year"] for point in json.loads(payload)["forecast"]]
+        assert years == list(range(newest + 1, newest + 6))
 
 
-def test_an_abandoned_name_is_reported_by_name(built, tmp_path, monkeypatch):
-    """Which names were dropped has to be visible, not just how many.
+def test_no_forecast_or_band_edge_is_negative(built, tmp_path):
+    """A share cannot be negative, and nothing clamps one any more.
 
-    A name with no stored forecast renders as history-only — the same as an
-    ineligible one — so silently abandoning it looks identical to it never
-    having qualified.
+    The forecast is the origin's share times the exponential of a predicted
+    log growth, and each band edge is that times another exponential, so every
+    published number is positive by construction. The old pipeline needed a
+    `max(x, 0)` on every field because ARIMA's additive intervals could reach
+    below zero; removing that clamp is only safe if this holds.
     """
-    import scripts.precompute_forecasts as module
+    db = _copy(built, tmp_path, "positive.db")
+    run(db)
 
-    monkeypatch.setattr(module, "_fit_one", lambda history: None)
+    stored = _forecasts(db)
+    assert stored
+    for payload in stored.values():
+        for point in json.loads(payload)["forecast"]:
+            assert point["lo95"] <= point["lo80"] <= point["hi80"] <= point["hi95"]
+            assert point["lo95"] > 0
 
-    db = tmp_path / "abandoned.db"
-    db.write_bytes(Path(built).read_bytes())
-    result = module.run(str(db), workers=1)
 
-    assert result["timed_out"] == result["eligible"]
-    assert len(result["abandoned"]) == result["eligible"]
-    assert all(isinstance(n, str) and isinstance(x, str) for n, x in result["abandoned"])
+def test_validation_scores_the_five_years_before_the_newest_one(built, tmp_path):
+    """The holdout has to be fully observed, or it is not a holdout.
+
+    Training at five years back and scoring against what actually happened is
+    what makes the search page's predicted-against-actual table checkable
+    against recorded history.
+    """
+    db = _copy(built, tmp_path, "validation.db")
+    result = run(db)
+
+    conn = sqlite3.connect(db)
+    try:
+        (newest,) = conn.execute("SELECT MAX(year) FROM names").fetchone()
+    finally:
+        conn.close()
+
+    assert result["origins"]["holdout"] == newest - 5
+    assert result["validated"] > 0
+
+    validations = [json.loads(payload)["validation"] for payload in _forecasts(db).values()]
+    scored = [v for v in validations if v is not None]
+    assert scored
+    for validation in scored:
+        assert [point["year"] for point in validation["points"]] == list(
+            range(newest - 4, newest + 1)
+        )
 
 
 def test_coverage_is_stored_per_name_and_never_served(built, tmp_path):
     """`payload` is handed to the API verbatim, so coverage must not be in it."""
-    db = tmp_path / "coverage.db"
-    db.write_bytes(Path(built).read_bytes())
-    run(str(db), workers=1)
+    db = _copy(built, tmp_path, "coverage.db")
+    run(db)
 
-    conn = sqlite3.connect(str(db))
+    conn = sqlite3.connect(db)
     try:
         rows = conn.execute(
             "SELECT payload, coverage_hits, coverage_n FROM forecasts WHERE coverage_n IS NOT NULL"
@@ -200,27 +233,55 @@ def test_coverage_is_stored_per_name_and_never_served(built, tmp_path):
         assert json.loads(hits).keys() == json.loads(counts).keys()
 
 
-def test_it_migrates_a_forecasts_table_built_before_coverage_was_stored(built, tmp_path):
+def test_it_replaces_a_forecasts_table_left_by_the_previous_pipeline(built, tmp_path):
     """An existing artifact must not have to be rebuilt from scratch.
 
-    `data/names.built.db` can already carry a three-column `forecasts` table
-    from a previous run, and `CREATE TABLE IF NOT EXISTS` will not widen it —
-    the insert would simply fail against the real artifact.
+    `data/names.built.db` carries a `forecasts` table from the ARIMA batch —
+    three columns wide, and holding forecasts for years that have since been
+    observed. `CREATE TABLE IF NOT EXISTS` will not widen it, and leaving its
+    rows in place would serve stale years alongside the new ones.
     """
-    db = tmp_path / "legacy.db"
-    db.write_bytes(Path(built).read_bytes())
+    db = _copy(built, tmp_path, "legacy.db")
 
-    conn = sqlite3.connect(str(db))
+    conn = sqlite3.connect(db)
     conn.execute("DROP TABLE IF EXISTS forecasts")
     conn.execute(
         "CREATE TABLE forecasts ("
         "name TEXT NOT NULL, sex TEXT NOT NULL, payload TEXT NOT NULL, "
         "PRIMARY KEY (name, sex))"
     )
+    conn.execute(
+        "INSERT INTO forecasts (name, sex, payload) VALUES ('zzz-retired', 'F', '{}')",
+    )
     conn.commit()
     conn.close()
 
-    result = run(str(db), workers=1)
+    result = run(db)
 
     assert result["stored"] > 0
-    assert _calibration(str(db))
+    assert ("zzz-retired", "F") not in _forecasts(db)
+    assert _calibration(db)
+
+
+def test_the_model_card_is_stored_once_rather_than_per_name(built, tmp_path):
+    """One pooled model means one description of it.
+
+    Copying the card into every payload would repeat the same few hundred
+    bytes ~24,700 times in the published artifact and leave room for two rows
+    to disagree about what produced them.
+    """
+    db = _copy(built, tmp_path, "card.db")
+    run(db)
+
+    conn = sqlite3.connect(db)
+    try:
+        cards = conn.execute("SELECT payload FROM model_card").fetchall()
+    finally:
+        conn.close()
+
+    assert len(cards) == 1
+    card = json.loads(cards[0][0])
+    assert card["features"] == list(pooled.FEATURES)
+    assert card["training_rows"] > 0
+    for payload in _forecasts(db).values():
+        assert "model" not in json.loads(payload)

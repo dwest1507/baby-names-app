@@ -176,3 +176,38 @@ def test_precompute_batch_reads_the_names_table_once_rather_than_per_name(tmp_pa
     # One query reads the whole table, one finds the latest year — never one
     # per name/sex pair, even though the sample data has 11 name profiles.
     assert len(reads_of_names) <= 2, reads_of_names
+
+
+def test_sample_database_runs_through_2025(sample_db):
+    """The fixture has to exercise production's temporal boundary.
+
+    Production forecasts from origin 2025 (the newest observed year) out to
+    2026-2030. A sample that stops at 2024 would let a forecast land on 2025
+    — a year that has already happened — without any test noticing.
+    """
+    conn = sqlite3.connect(sample_db)
+    try:
+        (newest,) = conn.execute("SELECT MAX(year) FROM names").fetchone()
+    finally:
+        conn.close()
+    assert newest == 2025
+
+
+def test_the_out_of_use_and_short_history_names_still_play_their_parts(sample_db):
+    """Both ineligibility explanations need a name that produces them at 2025.
+
+    Debra stands for "no longer in use" and Mateo for "not enough history".
+    Moving the sample's final year forward is exactly the change that could
+    quietly promote either into eligibility and leave the two explanations
+    untested.
+    """
+    conn = sqlite3.connect(sample_db)
+    try:
+        (newest,) = conn.execute("SELECT MAX(year) FROM names").fetchone()
+        debra = [y for (y,) in conn.execute("SELECT year FROM names WHERE name = 'Debra'")]
+        mateo = [y for (y,) in conn.execute("SELECT year FROM names WHERE name = 'Mateo'")]
+    finally:
+        conn.close()
+
+    assert len(debra) >= 10 and max(debra) < newest
+    assert max(mateo) == newest and len(mateo) < 10

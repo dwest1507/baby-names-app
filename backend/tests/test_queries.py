@@ -4,7 +4,7 @@ from app.services import queries
 def test_year_range():
     meta = queries.get_year_range()
     assert meta["min_year"] == 1960
-    assert meta["max_year"] == 2024
+    assert meta["max_year"] == 2025
 
 
 def test_top_names_ordered_by_count():
@@ -37,4 +37,4 @@ def test_top_names_excludes_padded_zero_rows():
 
 
 def test_latest_data_year_is_the_newest_year_with_a_recorded_count():
-    assert queries.get_latest_data_year() == 2024
+    assert queries.get_latest_data_year() == 2025

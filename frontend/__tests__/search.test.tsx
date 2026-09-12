@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { cloneElement, type ReactElement } from 'react'
 import userEvent from '@testing-library/user-event'
 import type { NameRow } from '@/lib/api'
+import { formatPercent } from '@/lib/format'
 
 const getMeta = vi.fn()
 const getNameHistory = vi.fn()
@@ -34,7 +35,7 @@ vi.mock('recharts', async () => {
 
 import SearchPage from '@/app/search/page'
 
-const NEWEST_YEAR = 2024
+const NEWEST_YEAR = 2025
 
 /** Observed rows for the given years — nothing for the years in between. */
 function historyFor(name: string, years: number[]): NameRow[] {
@@ -60,7 +61,23 @@ function emptyForecast(name: string, history: NameRow[]) {
   }
 }
 
-/** A forecast with validation, model diagnostics and measured calibration —
+/** The global model card: one pooled model produces every name's forecast, so
+ * what the page can say about "the model" describes the batch rather than this
+ * name. See docs/adr/0010-a-pooled-model-replaces-per-name-arima.md. */
+const MODEL_CARD = {
+  model_name: 'LightGBM Pooled Regressor (h=1..5)',
+  model_class: 'gradient-boosted trees',
+  target: 'log(y[t+h] / y[t])',
+  features: ['g1', 'g5', 'accel', 'vol', 'level'],
+  horizons: 5,
+  trained_through: NEWEST_YEAR,
+  training_origins: 91,
+  training_rows: 638_412,
+  sample_weight: 'share^0.5',
+  seed: 0,
+}
+
+/** A forecast with validation, the model card and measured calibration —
  * everything the "Holdout validation" panel and the chart's interval labels
  * read from. */
 function fullForecast(
@@ -73,7 +90,7 @@ function fullForecast(
     name,
     sex: 'F' as const,
     history: history.map((row) => ({ year: row.year, value: row.popularity_percent })),
-    forecast: [2025, 2026, 2027, 2028, 2029].map((year) => ({
+    forecast: [2026, 2027, 2028, 2029, 2030].map((year) => ({
       year,
       mean: 0.002,
       lo80: 0.0015,
@@ -86,21 +103,9 @@ function fullForecast(
       rmse: 0.0000234,
       mape: 12.3,
       skill,
-      points: [{ year: 2020, actual: 0.002, predicted: 0.0021 }],
+      points: [{ year: 2021, actual: 0.002, predicted: 0.0021 }],
     },
-    model: {
-      order: [1, 1, 1],
-      aic: 100,
-      bic: 105,
-      log_applied: false,
-      diagnostics: {
-        ljung_box: { p_value: 0.5, is_white_noise: true },
-        normality: { p_value: 0.5, is_normal: true },
-        heteroscedasticity: { p_value: 0.5, is_homoscedastic: true },
-        overall_quality: true,
-      },
-      stationarity: { is_stationary: true, adf_pvalue: 0.01, kpss_pvalue: 0.5 },
-    },
+    model: MODEL_CARD,
     calibration: {
       '0.8': { nominal: 0.8, empirical_coverage: empirical80, n: 45 },
       '0.95': { nominal: 0.95, empirical_coverage: empirical95, n: 45 },
@@ -142,7 +147,7 @@ describe('SearchPage forecast absence for a recent arrival', () => {
   })
 
   it('explains that a name recorded in the newest year has too little history', async () => {
-    const years = Array.from({ length: 8 }, (_, i) => 2017 + i) // ends 2024
+    const years = Array.from({ length: 8 }, (_, i) => 2018 + i) // ends 2025
     const history = historyFor('Mateo', years)
     getNameHistory.mockResolvedValue({ name: 'Mateo', sex: 'F', history })
     getNameForecast.mockResolvedValue(emptyForecast('Mateo', history))
@@ -218,7 +223,7 @@ describe('SearchPage trend chart once the forecast has loaded', () => {
   })
 
   it('still breaks the line across years with no recorded births', async () => {
-    const years = [2010, 2011, 2012, 2020, 2021, 2022, 2023, 2024]
+    const years = [2010, 2011, 2012, 2021, 2022, 2023, 2024, 2025]
     const history = historyFor('Luna', years)
     getNameHistory.mockResolvedValue({ name: 'Luna', sex: 'F', history })
     getNameForecast.mockResolvedValue({
@@ -309,5 +314,56 @@ describe('SearchPage interval labels', () => {
     expect(screen.queryByText(/80% interval/i)).toBeNull()
     expect(await screen.findByText(/51% interval/i)).toBeTruthy()
     expect(await screen.findByText(/44% interval/i)).toBeTruthy()
+  })
+})
+
+describe('SearchPage pooled model', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    getMeta.mockResolvedValue({ min_year: 1960, max_year: NEWEST_YEAR })
+  })
+
+  async function searchWithForecast() {
+    const years = Array.from({ length: 40 }, (_, i) => 1986 + i) // ends 2025
+    const history = historyFor('Emma', years)
+    getNameHistory.mockResolvedValue({ name: 'Emma', sex: 'F', history })
+    getNameForecast.mockResolvedValue(fullForecast('Emma', history))
+    await search('Emma')
+    await waitFor(() => expect(getNameForecast).toHaveBeenCalled())
+    return history
+  }
+
+  it('names the model that actually produced the line, not ARIMA', async () => {
+    await searchWithForecast()
+
+    await waitFor(() => expect(screen.getByText(/Pooled model forecast/)).toBeInTheDocument())
+    expect(document.body.textContent).not.toMatch(/ARIMA/)
+  })
+
+  it('describes the pooled model instead of a per-name fit', async () => {
+    await searchWithForecast()
+
+    await waitFor(() => expect(screen.getByText('How the forecast is made')).toBeInTheDocument())
+    expect(screen.getByText(MODEL_CARD.model_name)).toBeInTheDocument()
+    // Trained across every name's history, not this one's thirty points.
+    expect(screen.getByText(/638,412/)).toBeInTheDocument()
+    expect(screen.getByText(/91 origins/)).toBeInTheDocument()
+    for (const feature of MODEL_CARD.features) {
+      expect(screen.getByText(feature)).toBeInTheDocument()
+    }
+    expect(screen.queryByText(/Ljung/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Jarque/)).not.toBeInTheDocument()
+  })
+
+  it('reports the newest year as recorded history, not as a forecast', async () => {
+    const history = await searchWithForecast()
+
+    // The year-by-year table is the record; 2025 has to appear in it with the
+    // share that was actually observed.
+    const newest = history[history.length - 1]
+    await waitFor(() => expect(screen.getByText('Forecast →')).toBeInTheDocument())
+    const row = within(screen.getByRole('table')).getByText('2025').closest('tr')
+    expect(row).not.toBeNull()
+    expect(row!.textContent).toContain(formatPercent(newest.popularity_percent, 4))
   })
 })

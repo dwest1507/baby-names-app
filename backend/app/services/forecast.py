@@ -3,10 +3,11 @@
 Forecasts are fitted offline by the precompute batch and stored, so serving
 one is a lookup: read history fresh, read the stored blob, compose. Nothing
 here fits anything, and nothing here imports a fitting library — which is why
-`statsmodels` and `scipy` are not runtime dependencies at all. The ARIMA
-pipeline that produces the stored blob lives in `scripts/forecast/arima.py`,
-outside the application package and outside the container image. See
-docs/adr/0004-forecasts-as-a-build-artifact.md.
+no fitting library is a runtime dependency at all. The pooled model that
+produces the stored blob lives in
+`scripts/forecast/pooled.py`, outside the application package and outside the
+container image. See docs/adr/0004-forecasts-as-a-build-artifact.md and
+docs/adr/0010-a-pooled-model-replaces-per-name-arima.md.
 """
 
 # The batch imports this to decide how much history a holdout needs, so the
@@ -27,7 +28,11 @@ def is_eligible(years: list[int], latest_year: int | None) -> bool:
 
 
 def build_response(
-    sex: str, history: list[dict], stored: dict | None, calibration: dict | None = None
+    sex: str,
+    history: list[dict],
+    stored: dict | None,
+    calibration: dict | None = None,
+    model_card: dict | None = None,
 ) -> dict:
     """Compose the API response from history read fresh plus a stored blob.
 
@@ -42,6 +47,11 @@ def build_response(
     when there is no forecast to draw bands for. See
     docs/adr/0005-truthful-confidence-intervals.md: the frontend must label
     the shaded bands with this measured coverage, not the nominal 80%/95%.
+
+    `model_card` is what the batch can honestly say about the model itself
+    (`queries.get_model_card`). One pooled model forecasts every name, so it
+    describes the batch rather than this name, and it is served under `model`
+    where a per-name ARIMA fit's order and residual diagnostics used to go.
     """
     return {
         "name": history[0]["name"],
@@ -51,6 +61,6 @@ def build_response(
         ],
         "forecast": stored["forecast"] if stored else [],
         "validation": stored["validation"] if stored else None,
-        "model": stored["model"] if stored else None,
+        "model": model_card if stored else None,
         "calibration": calibration if stored else None,
     }

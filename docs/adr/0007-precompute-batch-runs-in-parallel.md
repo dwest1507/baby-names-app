@@ -4,7 +4,13 @@ Date: 2026-09-04
 
 ## Status
 
-Accepted
+Superseded by [10. A pooled model replaces per-name ARIMA](0010-a-pooled-model-replaces-per-name-arima.md).
+
+The per-name ARIMA fit this ADR exists to make tractable is gone, and with it the worker pool,
+the timeout and the resume flag. What it records about *why* those were needed — that killing a
+worker is the only thing that stops compiled code, and that a coverage figure has to be derivable
+from the stored table rather than from one invocation — is still the reasoning behind the batch's
+shape, so it is kept rather than deleted.
 
 Amends [4. Forecasts as a build artifact](0004-forecasts-as-a-build-artifact.md) and
 [5. Truthful confidence intervals](0005-truthful-confidence-intervals.md).

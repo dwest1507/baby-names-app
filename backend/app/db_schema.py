@@ -87,3 +87,19 @@ CREATE TABLE IF NOT EXISTS calibration (
     n INTEGER NOT NULL
 )
 """
+
+
+# The one thing that is true of the forecast model rather than of any one name:
+# what it is, what it was trained on, and which features it reads. One pooled
+# model produces every forecast (see
+# docs/adr/0010-a-pooled-model-replaces-per-name-arima.md), so this is stored
+# once here rather than copied into every row of `forecasts` — the same reason
+# `calibration` is its own table. The single row is pinned by a CHECK so a
+# second batch cannot quietly leave two cards behind for the API to pick
+# between.
+CREATE_MODEL_CARD_TABLE = """
+CREATE TABLE IF NOT EXISTS model_card (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    payload TEXT NOT NULL
+)
+"""

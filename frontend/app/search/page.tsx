@@ -63,13 +63,11 @@ function StatTile({
   )
 }
 
-function PassFail({ label, pass, pValue }: { label: string; pass: boolean; pValue: number }) {
+function Fact({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center justify-between border-b border-white/[0.04] py-2 text-sm last:border-0">
       <span className="text-[#8a8f98]">{label}</span>
-      <span className={`font-mono text-xs ${pass ? 'text-emerald-400' : 'text-amber-400'}`}>
-        {pass ? 'PASS' : 'CHECK'} · p={pValue.toFixed(4)}
-      </span>
+      <span className="font-mono text-xs text-[#ededef]">{value}</span>
     </div>
   )
 }
@@ -160,9 +158,9 @@ export default function SearchPage() {
           Name Search
         </h1>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[#8a8f98]">
-          Look up any name for the years it was actually recorded, plus a 5-year ARIMA forecast with
-          confidence intervals and holdout validation. Forecasts are produced only for names still
-          in use in the most recent year of data.
+          Look up any name for the years it was actually recorded, plus a 5-year forecast with
+          measured uncertainty bands and holdout validation. Forecasts are produced only for names
+          still in use in the most recent year of data.
         </p>
       </div>
 
@@ -253,7 +251,7 @@ export default function SearchPage() {
                   className="animate-[pulse-dot_1.5s_ease-in-out_infinite] font-mono text-[11px] tracking-widest text-[#0ea5e9]"
                   role="status"
                 >
-                  FITTING ARIMA…
+                  LOADING FORECAST…
                 </span>
               )}
             </div>
@@ -287,8 +285,8 @@ export default function SearchPage() {
                 <Card variant="default" className="p-6">
                   <h3 className="text-sm font-medium text-[#ededef]">Holdout validation</h3>
                   <p className="mt-1 text-xs leading-relaxed text-[#8a8f98]">
-                    The model is refit without the 5 most recent years, then scored against what
-                    actually happened.
+                    The model is retrained without the 5 most recent years, then scored on this name
+                    against what actually happened.
                   </p>
                   <div className="mt-4 grid grid-cols-3 gap-4">
                     <div>
@@ -333,35 +331,42 @@ export default function SearchPage() {
                   </div>
                 </Card>
               )}
+              {/* One model forecasts every name, so there is no per-name fit
+                  to report an order or residual diagnostics for. What is
+                  honestly sayable is what the model is and what it learned
+                  from. See docs/adr/0010-a-pooled-model-replaces-per-name-arima.md. */}
               {model && (
                 <Card variant="default" className="p-6">
                   <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-medium text-[#ededef]">Model diagnostics</h3>
-                    <Tag variant={model.diagnostics.overall_quality ? 'accent' : 'default'}>
-                      ARIMA({model.order.join(',')}){model.log_applied ? ' · LOG' : ''}
-                    </Tag>
+                    <h3 className="text-sm font-medium text-[#ededef]">How the forecast is made</h3>
+                    <Tag variant="accent">POOLED</Tag>
                   </div>
-                  <div className="mt-3">
-                    <PassFail
-                      label="Ljung–Box (white-noise residuals)"
-                      pass={model.diagnostics.ljung_box.is_white_noise}
-                      pValue={model.diagnostics.ljung_box.p_value}
+                  <p className="mt-1 text-xs leading-relaxed text-[#8a8f98]">
+                    Every name is forecast by one model, trained on how names in general have moved
+                    — not by a model fitted to this name alone.
+                  </p>
+                  <div className="mt-4">
+                    <Fact label="Model" value={model.model_name} />
+                    <Fact
+                      label="Trained on"
+                      value={`${formatCount(model.training_rows)} name-years, ${model.training_origins} origins`}
                     />
-                    <PassFail
-                      label="Jarque–Bera (normality)"
-                      pass={model.diagnostics.normality.is_normal}
-                      pValue={model.diagnostics.normality.p_value}
-                    />
-                    <PassFail
-                      label="ARCH (homoscedasticity)"
-                      pass={model.diagnostics.heteroscedasticity.is_homoscedastic}
-                      pValue={model.diagnostics.heteroscedasticity.p_value}
-                    />
-                    <PassFail
-                      label="ADF (stationarity)"
-                      pass={model.stationarity.adf_pvalue < 0.05}
-                      pValue={model.stationarity.adf_pvalue}
-                    />
+                    <Fact label="Data through" value={String(model.trained_through)} />
+                    <Fact label="Predicts" value={`${model.target}, h=1..${model.horizons}`} />
+                    <Fact label="Row weighting" value={model.sample_weight} />
+                  </div>
+                  <div className="mt-4">
+                    <div className="text-xs text-[#8a8f98]">Features it reads</div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {model.features.map((feature) => (
+                        <span
+                          key={feature}
+                          className="rounded border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5 font-mono text-[11px] text-[#8a8f98]"
+                        >
+                          {feature}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 </Card>
               )}

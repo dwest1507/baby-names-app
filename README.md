@@ -1,10 +1,11 @@
 # Baby Names Explorer
 
 A modern web app for exploring 145 years of baby name popularity from the Social Security
-Administration dataset — interactive trend charts, 5-year ARIMA forecasts with confidence
-intervals, and an AI chatbot that answers questions about the data in natural language.
+Administration dataset — interactive trend charts, 5-year forecasts from a pooled
+gradient-boosted model with measured uncertainty bands, and an AI chatbot that answers questions
+about the data in natural language.
 
-**Stack:** Next.js 16 · React 19 · TypeScript · Tailwind CSS v4 · Recharts · Python FastAPI · statsmodels · Groq
+**Stack:** Next.js 16 · React 19 · TypeScript · Tailwind CSS v4 · Recharts · Python FastAPI · LightGBM · Groq
 
 > This app was previously a single-file Streamlit app (`app.py`). It has been refactored into
 > a frontend/backend architecture with a dark, Linear-style design system matching the
@@ -53,7 +54,7 @@ baby-names-app/
 │   ├── app/
 │   │   ├── database.py     names.db resolution (local path or Hugging Face download)
 │   │   ├── routes/         /api/health, /api/meta, /api/top-names, /api/names, /api/chat
-│   │   └── services/       Queries, ARIMA forecasting, Groq SQL chatbot
+│   │   └── services/       Queries, forecast composition, Groq SQL chatbot
 │   ├── scripts/            DB build/publish/verify scripts, sample database generator
 │   ├── Dockerfile          Bakes the database in at build time (see below)
 │   └── tests/              Pytest suite (runs against a generated fixture DB)
@@ -68,8 +69,9 @@ baby-names-app/
 - **Top Names** (`/explore`) — the most popular names for any year since 1880, filterable by
   sex, as a bar chart and table
 - **Name Search** (`/search`) — full popularity history for any name with current-rank stat
-  tiles, a 5-year ARIMA forecast (80%/95% confidence intervals), 5-year holdout validation
-  metrics (MAE/RMSE/MAPE), and residual diagnostics (Ljung–Box, Jarque–Bera, ARCH, ADF)
+  tiles, a 5-year forecast with bands labelled by the coverage they actually achieve, 5-year
+  holdout validation metrics (MAE/RMSE/MAPE), and a card describing the pooled model that
+  produced the line
 - **AI Chat** (`/chat`) — natural-language questions are translated to SQL by Groq, executed
   against a read-only connection with keyword guards and row caps, and phrased back as an
   answer; the generated SQL is shown with every response
@@ -79,7 +81,7 @@ baby-names-app/
 ```
 Browser → Next.js (:3000)                      Python FastAPI (:8000)
             ├── Static pages                     ├── GET  /api/top-names, /api/names/{name}
-            │   (home, explore, search, chat)    ├── GET  /api/names/{name}/forecast (ARIMA)
+            │   (home, explore, search, chat)    ├── GET  /api/names/{name}/forecast
             └── /api/* (proxy) ────────────────→ ├── POST /api/chat (Groq SQL chatbot)
                                                  ├── SQLite names.db (read-only)
                                                  └── Rate limiting (slowapi)

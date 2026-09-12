@@ -1,8 +1,8 @@
 # Agent guide
 
 Baby Names Explorer: a Next.js frontend + Python FastAPI backend serving 145 years of SSA
-baby name data, with trend charts, ARIMA forecasts, and a Groq-powered natural-language SQL
-chatbot. It was refactored from a single-file Streamlit app into this frontend/backend split.
+baby name data, with trend charts, pooled-model popularity forecasts, and a Groq-powered
+natural-language SQL chatbot. It was refactored from a single-file Streamlit app into this frontend/backend split.
 
 ## Commands
 
@@ -52,13 +52,23 @@ Browser → Next.js (:3000) → /api/[...path]/route.ts (proxy) → FastAPI (:80
   recursive CTE — see `docs/adr/0008-a-resource-budget-for-generated-sql.md`. Any change to
   the SQL guardrails or the schema description (`SCHEMA_CONTEXT`) should keep the prompt and
   the validator in sync; a test asserts they agree.
-- `backend/scripts/forecast/arima.py` produces the ARIMA forecasts (confidence intervals,
-  holdout validation, residual diagnostics) shown on `/search`. It is batch-only: the
-  Dockerfile copies `app/` and not `scripts/`, so `statsmodels` and `scipy` are dev-group
-  dependencies and never reach the runtime image. `backend/app/services/forecast.py` holds
-  only what the request path uses — the ADR 0001 eligibility rule and the response composer,
-  which fits nothing. `research/forecasting/methods.py` imports the batch module directly for
-  its `current` baseline arm.
+- `backend/scripts/forecast/pooled.py` produces the forecasts shown on `/search`: one
+  LightGBM booster per horizon, trained across every name's history at once and predicting
+  every eligible name in one pass, from origin `MAX(year)` out five years. It replaced a
+  per-name ARIMA fit that scored negative skill outside the top 1000 — see
+  `docs/adr/0010-a-pooled-model-replaces-per-name-arima.md`. Feature extraction streams
+  straight off `idx_names_name_sex_year` (ADR 0009) with no sort file and no intermediate
+  artifact. It is batch-only: the Dockerfile copies `app/` and not `scripts/`, so `lightgbm`
+  and `scikit-learn` are dev-group dependencies and never reach the runtime image.
+  `backend/app/services/forecast.py` holds only what the request path uses — the ADR 0001
+  eligibility rule and the response composer, which fits nothing.
+- `backend/scripts/forecast/arima.py` is the frozen previous pipeline. Nothing in the batch
+  calls it; `research/forecasting/methods.py` imports it so rounds 1-6 of the benchmark stay
+  reproducible, which is why `statsmodels` and `scipy` remain dev-group dependencies.
+- The pooled port is pinned numerically: `research/forecasting/make_parity_fixture.py`
+  regenerates `backend/tests/fixtures/pooled_parity.json` from the research modules, and
+  `backend/tests/test_forecast_pooled.py` demands the shipped code reproduce it. Regenerate it
+  deliberately, only when the model is meant to change.
 - Frontend pages under `frontend/app/` (`/`, `/explore`, `/search`, `/chat`) call the backend
   exclusively through `frontend/lib`'s typed API client, which hits the `/api/*` proxy — never
   fetch the backend URL directly from a component.

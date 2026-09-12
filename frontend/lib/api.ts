@@ -76,29 +76,22 @@ export interface CalibrationLevel {
 // labelled with `empirical_coverage`, not `nominal`.
 export type Calibration = Record<string, CalibrationLevel>
 
-export interface DiagnosticTest {
-  p_value: number
-  is_white_noise?: boolean
-  is_normal?: boolean
-  is_homoscedastic?: boolean
-}
-
+// One pooled model produces every name's forecast, so this describes the
+// batch rather than the name being looked at: there is no per-name fit left to
+// report an order or residual diagnostics for. See
+// docs/adr/0010-a-pooled-model-replaces-per-name-arima.md.
 export interface Model {
-  order: number[]
-  aic: number
-  bic: number
-  log_applied: boolean
-  diagnostics: {
-    ljung_box: { p_value: number; is_white_noise: boolean }
-    normality: { p_value: number; is_normal: boolean }
-    heteroscedasticity: { p_value: number; is_homoscedastic: boolean }
-    overall_quality: boolean
-  }
-  stationarity: {
-    is_stationary: boolean
-    adf_pvalue: number
-    kpss_pvalue: number
-  }
+  model_name: string
+  model_class: string
+  // The quantity the model predicts, as an expression.
+  target: string
+  features: string[]
+  horizons: number
+  trained_through: number
+  training_origins: number
+  training_rows: number
+  sample_weight: string
+  seed: number
 }
 
 export interface ForecastPoint {

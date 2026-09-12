@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 
 import pytest
 from conftest import SHARED_SECRET
@@ -54,7 +55,7 @@ def test_health():
 def test_meta():
     response = client.get("/api/meta")
     assert response.status_code == 200
-    assert response.json() == {"min_year": 1960, "max_year": 2024}
+    assert response.json() == {"min_year": 1960, "max_year": 2025}
 
 
 def test_top_names():
@@ -189,15 +190,17 @@ def test_forecast_for_a_name_in_current_use_covers_the_next_five_years():
 
 def test_forecast_endpoint_fits_no_model_at_request_time(monkeypatch):
     # Forecasts are precomputed by scripts/precompute_forecasts.py and stored;
-    # the endpoint is a lookup. If it fit a model live, this would raise and
-    # the request would 500 instead of returning a populated forecast.
-    from scripts.forecast import arima
+    # the endpoint is a lookup. If it fit or even predicted live, this would
+    # raise and the request would 500 instead of returning a populated
+    # forecast. See docs/adr/0004-forecasts-as-a-build-artifact.md.
+    from scripts.forecast import pooled
 
     def _must_not_be_called(*args, **kwargs):
-        raise AssertionError("ARIMA fitting must not run on the request path")
+        raise AssertionError("the pooled model must not run on the request path")
 
-    monkeypatch.setattr(arima, "_fit_best_model", _must_not_be_called)
-    monkeypatch.setattr(arima, "fit_forecast", _must_not_be_called)
+    monkeypatch.setattr(pooled, "train", _must_not_be_called)
+    monkeypatch.setattr(pooled, "predict", _must_not_be_called)
+    monkeypatch.setattr(pooled, "build_rows", _must_not_be_called)
 
     response = client.get("/api/names/emma/forecast", params={"sex": "F"})
     assert response.status_code == 200
@@ -354,3 +357,56 @@ def test_chat_rejects_too_many_history_entries():
         },
     )
     assert response.status_code == 422
+
+
+def test_forecast_model_section_is_the_pooled_model_card():
+    """The served forecast has to say what actually produced it.
+
+    One pooled model forecasts every name, so what the page can honestly
+    report about "the model" is a property of the batch, not of this name:
+    the model class, what it was trained on, and the features it reads. An
+    ARIMA order or a residual-diagnostics panel would be describing a per-name
+    fit that no longer happens. See docs/adr/0010-a-pooled-model-replaces-per-name-arima.md.
+    """
+    body = client.get("/api/names/emma/forecast", params={"sex": "F"}).json()
+    model = body["model"]
+
+    assert "LightGBM" in model["model_name"]
+    assert model["horizons"] == 5
+    assert model["features"]
+    assert model["trained_through"] == body["history"][-1]["year"]
+    assert "order" not in model
+    assert "diagnostics" not in model
+
+
+def test_forecast_survives_an_artifact_published_before_the_model_card(sample_db, monkeypatch):
+    """A missing model card costs the panel, not the endpoint.
+
+    The database is published independently of this code (ADR 0006), so a
+    deploy can meet an artifact whose batch predates `model_card` and has no
+    such table at all. The forecast itself is still stored and still servable,
+    and the page already renders without the panel.
+    """
+    import shutil
+    import sqlite3
+
+    from app import config, database
+
+    stale = Path(sample_db).parent / "stale.db"
+    shutil.copyfile(sample_db, stale)
+    conn = sqlite3.connect(stale)
+    conn.execute("DROP TABLE model_card")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(config, "NAMES_DB_PATH", str(stale))
+    database.resolve_database_path.cache_clear()
+    try:
+        response = client.get("/api/names/emma/forecast", params={"sex": "F"})
+    finally:
+        database.resolve_database_path.cache_clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["forecast"]) == 5
+    assert body["model"] is None

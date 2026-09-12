@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app import db_schema  # noqa: E402
 
-YEARS = range(1960, 2025)
+YEARS = range(1960, 2026)
 
 # Below this share of births the source suppresses the count for privacy, so
 # the real data has no row at all for that name/sex/year.

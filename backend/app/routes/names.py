@@ -51,4 +51,5 @@ async def name_forecast(name: str, sex: Literal["M", "F"] = Query(...)) -> dict:
         raise HTTPException(status_code=404, detail=f"No data found for '{name}' ({sex})")
     stored = queries.get_forecast(name, sex)
     calibration = queries.get_calibration() if stored else None
-    return forecast.build_response(sex, history, stored, calibration)
+    model_card = queries.get_model_card() if stored else None
+    return forecast.build_response(sex, history, stored, calibration, model_card)

@@ -2,9 +2,14 @@
 
 The production image builds with `uv sync --frozen --no-dev`, so anything in
 the dev/batch dependency group is simply absent from the container. Asserting
-that the app *doesn't import* statsmodels or scipy is weaker than asserting it
-*runs without them*, so these tests block the imports outright and import the
+that the app *doesn't import* a fitting library is weaker than asserting it
+*runs without one*, so these tests block the imports outright and import the
 app for real. See docs/adr/0004-forecasts-as-a-build-artifact.md.
+
+`lightgbm` is on the list for the same reason `statsmodels` is: the pooled
+model runs only in the offline batch (`scripts/forecast/pooled.py`), which the
+Dockerfile never copies. See
+docs/adr/0010-a-pooled-model-replaces-per-name-arima.md.
 """
 
 import subprocess
@@ -14,12 +19,12 @@ from pathlib import Path
 
 BACKEND = Path(__file__).parent.parent
 
-# Refuses statsmodels, scipy and their submodules the way a container that
+# Refuses the fitting libraries and their submodules the way a container that
 # never installed them would, then exercises the request path's module graph.
 BLOCKED = """
 import sys
 
-BANNED = ("statsmodels", "scipy")
+BANNED = ("statsmodels", "scipy", "lightgbm", "sklearn")
 
 
 class Blocker:
@@ -57,7 +62,7 @@ def _run_without_fitting_libraries() -> subprocess.CompletedProcess:
     )
 
 
-def test_the_app_imports_without_statsmodels_or_scipy():
+def test_the_app_imports_without_any_fitting_library():
     result = _run_without_fitting_libraries()
     assert result.returncode == 0, result.stderr
     assert "ok" in result.stdout
@@ -74,3 +79,5 @@ def test_the_fitting_libraries_are_not_runtime_dependencies():
     }
     assert "statsmodels" not in runtime
     assert "scipy" not in runtime
+    assert "lightgbm" not in runtime
+    assert "scikit-learn" not in runtime

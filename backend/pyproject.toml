@@ -1,7 +1,7 @@
 [project]
 name = "backend"
 version = "0.1.0"
-description = "Baby Names Explorer API — SQLite queries, ARIMA forecasts, and a Groq-powered SQL chatbot"
+description = "Baby Names Explorer API — SQLite queries, precomputed forecasts, and a Groq-powered SQL chatbot"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -20,15 +20,20 @@ dependencies = [
 
 [dependency-groups]
 # `uv sync --frozen --no-dev` builds the production image, so anything here is
-# absent from the container. The ARIMA fitting libraries belong here and not in
+# absent from the container. The fitting libraries belong here and not in
 # [project.dependencies]: fitting runs only in the offline batch
-# (scripts/forecast/), which the Dockerfile never copies. See
-# docs/adr/0004-forecasts-as-a-build-artifact.md.
+# (scripts/forecast/), which the Dockerfile never copies. `lightgbm` and
+# `scikit-learn` are what the pooled model needs; `statsmodels` and `scipy` are
+# what the frozen ARIMA arm in research/forecasting still needs. See
+# docs/adr/0004-forecasts-as-a-build-artifact.md and
+# docs/adr/0010-a-pooled-model-replaces-per-name-arima.md.
 dev = [
     "httpx>=0.27.0",
+    "lightgbm>=4.5.0",
     "pandas>=2.0.0",
     "pytest>=8.0.0",
     "ruff>=0.9.0",
+    "scikit-learn>=1.5.0",
     "scipy>=1.11.0",
     "selenium>=4.0.0",
     "statsmodels>=0.14.0",

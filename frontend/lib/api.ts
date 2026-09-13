@@ -124,6 +124,11 @@ export interface Stratum {
 export interface ForecastPoint {
   year: number
   mean: number
+  // The rank this projection earned against the whole field observed at the
+  // origin — the eligible names at what the model said, everyone else held at
+  // their last observed share. Ranked in the batch, never at request time. See
+  // docs/adr/0013-projected-rank-against-a-frozen-field.md.
+  projected_rank: number
   lo80: number
   hi80: number
   lo95: number
@@ -134,6 +139,7 @@ export interface ForecastPoint {
 export interface TrackRecordEntry {
   year: number
   projected_share: number
+  projected_rank: number
 }
 
 export interface ForecastPayload {

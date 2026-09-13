@@ -93,7 +93,10 @@ function fullForecast(
     tier?: string
     volatilityBin?: number
     stratum?: { tier: string; volatility_bin: number } | null
-    trackRecord?: Record<string, { year: number; projected_share: number }[]>
+    trackRecord?: Record<
+      string,
+      { year: number; projected_share: number; projected_rank: number }[]
+    >
   } = {}
 ) {
   const {
@@ -114,6 +117,9 @@ function fullForecast(
           .map((row) => ({
             year: row.year,
             projected_share: row.popularity_percent * (row.year % 2 ? 1 + 0.02 * h : 1 - 0.01 * h),
+            // Missed by exactly the horizon, so a rank read off the page says
+            // which horizon produced it.
+            projected_rank: row.popularity_rank + h,
           })),
       ])
     ),
@@ -122,9 +128,13 @@ function fullForecast(
     name,
     sex: 'F' as const,
     history: history.map((row) => ({ year: row.year, value: row.popularity_percent })),
-    forecast: [2026, 2027, 2028, 2029, 2030].map((year) => ({
+    forecast: [2026, 2027, 2028, 2029, 2030].map((year, i) => ({
       year,
       mean: 0.002,
+      // Ranked in the batch against the whole field observed at the origin,
+      // so the page only prints it. See
+      // docs/adr/0013-projected-rank-against-a-frozen-field.md.
+      projected_rank: 12 + i,
       lo80: 0.0015,
       hi80: 0.0025,
       lo95: 0.001,
@@ -416,6 +426,39 @@ describe('SearchPage track record', () => {
     expect(screen.getByText(/as a share of what actually happened/i)).toBeInTheDocument()
   })
 
+  it('prints the projected rank next to the rank the year actually recorded', async () => {
+    // Adjacent columns, because that is the comparison a reader is making:
+    // "it said 47th, it was 46th". Which is also why the rank the model is
+    // credited with has to be ranked against the whole field rather than
+    // against the forecastable names — a systematic gap between two adjacent
+    // columns reads as the model being wrong, not as a ranking artifact. See
+    // docs/adr/0013-projected-rank-against-a-frozen-field.md.
+    const { history, table } = await searchEmma()
+
+    const headers = within(table)
+      .getAllByRole('columnheader')
+      .map((header) => header.textContent)
+    expect(headers.indexOf('Projected rank')).toBe(headers.indexOf('Rank') + 1)
+
+    const row = history.find((entry) => entry.year === 2011)!
+    const [rank, projectedRank] = within(rowFor(table, 2011)).getAllByRole('cell').slice(3, 5)
+    expect(rank).toHaveTextContent(String(row.popularity_rank))
+    expect(projectedRank).toHaveTextContent(String(row.popularity_rank + 1))
+  })
+
+  it('moves the projected rank with the horizon selector', async () => {
+    // The fixture misses the rank by exactly the horizon, so the column says
+    // which horizon produced it.
+    const { history, table } = await searchEmma()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('radio', { name: '5 years' }))
+
+    const row = history.find((entry) => entry.year === 2011)!
+    const projectedRank = within(rowFor(table, 2011)).getAllByRole('cell')[4]
+    expect(projectedRank).toHaveTextContent(String(row.popularity_rank + 5))
+  })
+
   it('leaves a year the model was never checked on blank rather than zero', async () => {
     // "Not measured" and "measured as nothing" are different facts. 1995 is
     // before the first origin could be scored; 2005 is a gap inside the record,
@@ -423,12 +466,17 @@ describe('SearchPage track record', () => {
     const years = Array.from({ length: 40 }, (_, i) => 1986 + i)
     const record = historyFor('Emma', years)
       .filter((row) => row.year >= 2000 && row.year !== 2005)
-      .map((row) => ({ year: row.year, projected_share: row.popularity_percent }))
+      .map((row) => ({
+        year: row.year,
+        projected_share: row.popularity_percent,
+        projected_rank: row.popularity_rank,
+      }))
     const { table } = await searchEmma({ trackRecord: { '1': record } })
 
     for (const year of [1995, 2005]) {
       const cells = within(rowFor(table, year)).getAllByRole('cell')
-      const [projected, error] = cells.slice(-2)
+      const [projectedRank, projected, error] = cells.slice(-3)
+      expect(projectedRank).toHaveTextContent(/^$/)
       expect(projected).toHaveTextContent(/^$/)
       expect(error).toHaveTextContent(/^$/)
     }
@@ -510,7 +558,11 @@ describe('SearchPage track record', () => {
         String(h),
         historyFor('Emma', years)
           .filter((row) => row.year >= 2021 + h)
-          .map((row) => ({ year: row.year, projected_share: row.popularity_percent })),
+          .map((row) => ({
+            year: row.year,
+            projected_share: row.popularity_percent,
+            projected_rank: row.popularity_rank,
+          })),
       ])
     )
     const { table } = await searchEmma({ trackRecord: record })
@@ -881,6 +933,21 @@ describe('SearchPage forecast table', () => {
       expect(rows[i]).toHaveTextContent(formatPercent(point.lo80, 4))
       expect(rows[i]).toHaveTextContent(formatPercent(point.hi80, 4))
       expect(rows[i]).not.toHaveTextContent(formatPercent(point.lo95, 4))
+    })
+  })
+
+  it('answers "will it still be in the top ten?" with a projected rank per year', async () => {
+    // The question a parent actually has. The model predicts a share of
+    // births, so the rank beside it is computed in the batch against the whole
+    // field observed at the origin — the page only prints what it was given.
+    // See docs/adr/0013-projected-rank-against-a-frozen-field.md.
+    const payload = await searchEmma()
+
+    const table = await screen.findByRole('table', { name: /forecast/i })
+    expect(within(table).getByRole('columnheader', { name: /projected rank/i })).toBeInTheDocument()
+    const rows = within(table).getAllByRole('row').slice(1)
+    payload.forecast.forEach((point, i) => {
+      expect(rows[i]).toHaveTextContent(String(point.projected_rank))
     })
   })
 

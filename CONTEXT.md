@@ -45,7 +45,7 @@ The predictions a name accumulated across the backtest span, indexed by horizon:
 _Avoid_: Backtest points, history of predictions, hindcast
 
 **Projected Rank**:
-The rank a projected share earns against the whole field of names observed at its origin, with names too new or too lapsed to forecast held at their last observed share. Ranking against the forecastable names alone would be a different and flatteringly better figure, because roughly four in five observed name/sex pairs cannot be forecast at all.
+The rank a projected share earns against the whole field of names recorded in its origin year, with those too new to forecast held at the share they were recorded with. A name not recorded in the origin year is out of the field entirely, exactly as it is out of that year's actual ranks. Ranking against the forecastable names alone would be a different and flatteringly better figure, because roughly four in five observed name/sex pairs cannot be forecast at all.
 _Avoid_: Forecast rank, predicted position, rank forecast
 
 **Popularity Tier**:

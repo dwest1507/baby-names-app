@@ -526,7 +526,7 @@ def test_forecast_carries_what_the_model_said_at_every_horizon_year_by_year():
     for horizon, entries in body["track_record"].items():
         assert [entry["year"] for entry in entries] == list(range(1995 + int(horizon), newest + 1))
         for entry in entries:
-            assert set(entry) == {"year", "projected_share"}
+            assert set(entry) == {"year", "projected_share", "projected_rank"}
             assert entry["projected_share"] > 0
 
 
@@ -567,3 +567,26 @@ def test_a_name_eligible_at_few_origins_shows_a_short_track_record():
         assert years[0] >= first_eligible_origin + int(horizon)
         assert years[-1] == newest
     assert len(body["track_record"]["5"]) >= body["validation"]["skill_windows"]
+
+
+def test_every_projection_reaches_the_page_with_the_rank_it_earned():
+    """ "Will it still be in the top ten?" — answered, and answered by the batch.
+
+    A rank is a position among every other name, so it cannot be derived from
+    one name's payload at request time. It is computed once against the whole
+    field observed at each origin and stored beside the share, and the request
+    path only expands the arrays it was given. See
+    docs/adr/0013-projected-rank-against-a-frozen-field.md.
+    """
+    response = client.get("/api/names/emma/forecast", params={"sex": "F"})
+    assert response.status_code == 200
+    body = response.json()
+
+    for point in body["forecast"]:
+        assert isinstance(point["projected_rank"], int)
+        assert point["projected_rank"] >= 1
+    for entries in body["track_record"].values():
+        assert entries
+        for entry in entries:
+            assert isinstance(entry["projected_rank"], int)
+            assert entry["projected_rank"] >= 1

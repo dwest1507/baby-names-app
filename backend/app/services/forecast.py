@@ -72,6 +72,12 @@ def build_response(
     not served verbatim, and composition rather than fitting, so ADR 0004
     holds. A year the model was never checked on has no entry. See
     docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
+
+    Every entry, and every forecast point, carries a `projected_rank` beside
+    its share: the rank that projection earned against the whole field
+    observed at its origin. Ranking is a statement about every name at once,
+    so it happens in the batch and nothing is ranked here. See
+    docs/adr/0013-projected-rank-against-a-frozen-field.md.
     """
     return {
         "name": history[0]["name"],
@@ -91,8 +97,14 @@ def build_response(
 def _track_record(stored: dict) -> dict[str, list[dict]]:
     return {
         horizon: [
-            {"year": series["start"] + offset, "projected_share": share}
-            for offset, share in enumerate(series["projected_share"])
+            {
+                "year": series["start"] + offset,
+                "projected_share": share,
+                "projected_rank": rank,
+            }
+            for offset, (share, rank) in enumerate(
+                zip(series["projected_share"], series["projected_rank"], strict=True)
+            )
             if share is not None
         ]
         for horizon, series in stored.get("track_record", {}).items()

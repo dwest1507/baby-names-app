@@ -210,12 +210,13 @@ export default function SearchPage() {
   // forecast has one to show, and a name eligible at few origins may have none
   // at some horizons.
   const hasForecast = forecast !== null && forecast.forecast.length > 0
-  const projectedShares = new Map(
-    (forecast?.track_record[String(horizon)] ?? []).map((entry) => [
-      entry.year,
-      entry.projected_share,
-    ])
-  )
+  const trackRecord = forecast?.track_record[String(horizon)] ?? []
+  const projectedShares = new Map(trackRecord.map((entry) => [entry.year, entry.projected_share]))
+  // The rank that projection earned against the whole field observed at its
+  // origin. Computed in the batch, because a rank is a position among every
+  // other name and the page holds one. See
+  // docs/adr/0013-projected-rank-against-a-frozen-field.md.
+  const projectedRanks = new Map(trackRecord.map((entry) => [entry.year, entry.projected_rank]))
   const horizonLabel = yearsLabel(horizon)
   // Accuracy summarised from exactly the errors the historical table shows.
   const checkedErrors =
@@ -406,6 +407,10 @@ export default function SearchPage() {
                           </span>
                         )}
                       </th>
+                      {/* "Will it still be in the top ten?" — the question the
+                          page could not answer until the batch ranked each
+                          projection against the field it was made in. */}
+                      <th className="px-6 py-3 text-right font-medium">Projected rank</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -419,6 +424,9 @@ export default function SearchPage() {
                         </td>
                         <td className="px-6 py-2.5 text-right font-mono text-xs text-[#8a8f98]">
                           {formatPercent(point.lo80, 4)} – {formatPercent(point.hi80, 4)}
+                        </td>
+                        <td className="px-6 py-2.5 text-right font-mono text-xs text-[#ededef]">
+                          {formatRank(point.projected_rank)}
                         </td>
                       </tr>
                     ))}
@@ -659,6 +667,9 @@ export default function SearchPage() {
                     <th className="px-6 py-3 text-right font-medium">Rank</th>
                     {hasForecast && (
                       <>
+                        {/* Beside the rank it is a projection of, because that
+                            is the comparison a reader is making. */}
+                        <th className="px-6 py-3 text-right font-medium">Projected rank</th>
                         <th className="px-6 py-3 text-right font-medium">Projected share</th>
                         <th className="px-6 py-3 text-right font-medium">Error</th>
                       </>
@@ -689,6 +700,9 @@ export default function SearchPage() {
                         </td>
                         {hasForecast && (
                           <>
+                            <td className="px-6 py-2.5 text-right font-mono text-xs text-[#8a8f98]">
+                              {projectedRanks.get(row.year) ?? ''}
+                            </td>
                             <td className="px-6 py-2.5 text-right font-mono text-xs text-[#8a8f98]">
                               {projected === undefined ? '' : formatPercent(projected, 4)}
                             </td>

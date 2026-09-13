@@ -817,7 +817,7 @@ def test_every_horizon_of_the_track_record_reaches_the_newest_observed_year(buil
     for payload in payloads:
         for horizon, series in payload["track_record"].items():
             assert horizon in {"1", "2", "3", "4", "5"}
-            assert set(series) == {"start", "projected_share"}
+            assert set(series) == {"start", "projected_share", "projected_rank"}
             assert isinstance(series["start"], int)
             shares = series["projected_share"]
             years = range(series["start"], series["start"] + len(shares))
@@ -915,3 +915,60 @@ def test_a_name_first_eligible_after_the_span_has_no_five_year_record(built, tmp
         assert series["start"] == first_eligible_origin + int(horizon)
         assert series["start"] + len(series["projected_share"]) - 1 == newest
     assert payload["validation"] is None or "skill" not in payload["validation"]
+
+
+def test_every_projection_carries_a_rank_against_the_whole_observed_field(built, tmp_path):
+    """A projected share is only half of "will it still be in the top ten?".
+
+    The batch is the only place a rank can be computed — a rank is a position
+    among every other name, and the request path holds one name (ADR 0004). So
+    every forecast point and every track record entry leaves the batch with the
+    rank its projection earned, against the whole field observed at the origin:
+    the eligible names at what the model said, and everyone else held where
+    they were last seen. See
+    docs/adr/0013-projected-rank-against-a-frozen-field.md.
+    """
+    db = _copy(built, tmp_path, "projected-rank.db")
+    newest = run(db)["origins"]["production"]
+    payloads = {key: json.loads(payload) for key, payload in _forecasts(db).items()}
+
+    for payload in payloads.values():
+        for point in payload["forecast"]:
+            assert isinstance(point["projected_rank"], int)
+            assert point["projected_rank"] >= 1
+        for series in payload["track_record"].values():
+            assert set(series) == {"start", "projected_share", "projected_rank"}
+            shares, ranks = series["projected_share"], series["projected_rank"]
+            assert len(ranks) == len(shares)
+            # A year the model was never checked on has neither, rather than a
+            # rank against a projection that was never made.
+            assert [share is None for share in shares] == [rank is None for rank in ranks]
+            assert all(rank is None or rank >= 1 for rank in ranks)
+
+    conn = sqlite3.connect(db)
+    try:
+        series = list(pooled.stream_series(conn))
+    finally:
+        conn.close()
+    field = pooled.observed_field(series, newest)
+    # Mateo is recorded in the newest year but has too little history to be
+    # forecast, so he is in the field without ever being ranked in it.
+    assert "mateo|M" in field
+    assert ("mateo", "M") not in payloads
+
+    for sex in ("F", "M"):
+        for horizon in range(pooled.H):
+            projected = {
+                f"{name}|{row_sex}": payload["forecast"][horizon]["mean"]
+                for (name, row_sex), payload in payloads.items()
+                if row_sex == sex
+            }
+            # Ranked within a sex, as `popularity_rank` is: the field a name
+            # competes in is the names of its own sex observed that year.
+            same_sex = {key: share for key, share in field.items() if key.endswith(f"|{sex}")}
+            expected = pooled.rank_against_field(projected, same_sex)
+            for (name, row_sex), payload in payloads.items():
+                if row_sex == sex:
+                    assert (
+                        payload["forecast"][horizon]["projected_rank"] == expected[f"{name}|{sex}"]
+                    )

@@ -4,7 +4,7 @@ Date: 2026-09-12
 
 ## Status
 
-Proposed
+Accepted
 
 Builds on [1. Forecast only names in current use](0001-forecast-only-names-in-current-use.md)
 and [12. A track record, indexed by horizon, replaces the holdout on the search page](0012-a-track-record-replaces-the-holdout-on-the-page.md).

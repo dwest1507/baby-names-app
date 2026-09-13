@@ -80,6 +80,15 @@ Browser → Next.js (:3000) → /api/[...path]/route.ts (proxy) → FastAPI (:80
   and `scikit-learn` are dev-group dependencies and never reach the runtime image.
   `backend/app/services/forecast.py` holds only what the request path uses — the ADR 0001
   eligibility rule and the response composer, which fits nothing.
+- Every projection carries a **projected rank** beside its share, and ranking happens only in the
+  batch: `pooled.rank_against_field` is a pure function over one `(origin, horizon, sex)` slice, and
+  what it ranks against is the whole field `pooled.observed_field` read off that origin — the
+  eligible names at what the model said, every other name recorded that year held at the share it
+  was recorded with. Ranking against the forecastable names alone is one sort cheaper and
+  progressively generous below the top 1000, which `/search` would show as a systematic gap between
+  two adjacent columns; see `docs/adr/0013-projected-rank-against-a-frozen-field.md`. The ranks are
+  stored in the compact track record's third parallel array and on each forecast point, so the
+  request path still only expands arrays (ADR 0004).
 - The shaded bands are conformal, not model-derived: `pooled.strata_bands` takes the quantiles
   of the fit's own five-year log residuals within each `(popularity tier, volatility bin)`
   stratum, so a volatile name gets a wider band than a steady one at the same rank. A stratum

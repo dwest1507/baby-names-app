@@ -10,9 +10,10 @@ function payload(overrides: Partial<ForecastPayload> = {}): ForecastPayload {
       year,
       value: 0.001 + i * 0.0001,
     })),
-    forecast: [2026, 2027].map((year) => ({
+    forecast: [2026, 2027].map((year, i) => ({
       year,
       mean: 0.002,
+      projected_rank: 12 + i,
       lo80: 0.0015,
       hi80: 0.0025,
       lo95: 0.001,
@@ -49,9 +50,10 @@ describe('buildChartRows', () => {
     // the origin to 2025, exactly this shipped: 2025 was an observed year in
     // `names` and a forecast year in `forecasts` at the same time.
     const stale = payload({
-      forecast: [2025, 2026].map((year) => ({
+      forecast: [2025, 2026].map((year, i) => ({
         year,
         mean: 0.09,
+        projected_rank: 12 + i,
         lo80: 0.08,
         hi80: 0.1,
         lo95: 0.07,
@@ -71,7 +73,9 @@ describe('buildChartRows', () => {
     // A third line competes with the story the chart tells and repeats what
     // the page reports in its historical table. See issue #59.
     const withTrackRecord = payload({
-      track_record: { '5': [2023, 2024].map((year) => ({ year, projected_share: 0.0042 })) },
+      track_record: {
+        '5': [2023, 2024].map((year) => ({ year, projected_share: 0.0042, projected_rank: 42 })),
+      },
     })
 
     const { rows } = buildChartRows(withTrackRecord)

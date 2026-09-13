@@ -350,7 +350,7 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
         edges: list[float] = []
         bands: dict = {}
         validations: dict = {}
-        track_records: dict[str, dict[int, dict[int, float]]] = defaultdict(
+        track_records: dict[str, dict[int, dict[int, tuple[float, int]]]] = defaultdict(
             lambda: defaultdict(dict)
         )
 
@@ -366,7 +366,14 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
             if origin in scored:
                 tally.add(origin, rows, predicted)
             if origin in fitted:
-                _retain_track_record(track_records, origin, rows, predicted)
+                # Ranked here rather than at request time, and against the
+                # whole field observed at this origin rather than against the
+                # names that happen to be forecastable. See
+                # docs/adr/0013-projected-rank-against-a-frozen-field.md.
+                ranks = pooled.projected_ranks(
+                    rows, predicted, pooled.observed_field(series, origin)
+                )
+                _retain_track_record(track_records, origin, rows, predicted, ranks)
             if origin == calibration_origin:
                 # The volatility bin edges are tertiles of the wobble present
                 # at this origin, and they are fixed here and reused at every
@@ -394,6 +401,12 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
 
         note("Forecasting the years still to come...")
         rows, predicted, training_count = _fit(window, production_origin, note, threads)
+        # The served forecast's ranks, against the field observed in the newest
+        # year: the same construction the track record's ranks are built with,
+        # so the two columns a visitor compares were measured the same way.
+        forecast_ranks = pooled.projected_ranks(
+            rows, predicted, pooled.observed_field(series, production_origin)
+        )
 
         conn.execute("DELETE FROM forecasts")
         for i, row in enumerate(rows):
@@ -408,6 +421,7 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
                     {
                         "year": int(production_origin + horizon + 1),
                         "mean": float(value),
+                        "projected_rank": int(forecast_ranks[i][horizon]),
                         **_band_fields(float(value), bands, (tier, volatility_bin), horizon),
                     }
                     for horizon, value in enumerate(predicted[i])
@@ -474,7 +488,9 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
     }
 
 
-def _retain_track_record(track_records: dict, origin: int, rows, predicted: np.ndarray) -> None:
+def _retain_track_record(
+    track_records: dict, origin: int, rows, predicted: np.ndarray, ranks: np.ndarray
+) -> None:
     """Keep what one fitted origin said about each year it can be checked on.
 
     Every horizon whose year has since been observed for the name: an entry is
@@ -483,31 +499,39 @@ def _retain_track_record(track_records: dict, origin: int, rows, predicted: np.n
     after the span to its shorter horizons — its later years have not happened.
     Only the track record's origins call this — the calibration origin, fitted
     for another reason, must not leave evidence the page reports as a record.
+
+    What the model said is a share *and* the rank that share earned in its
+    origin's field, kept together because the page prints them in adjacent
+    columns and a rank without its projection is not checkable against
+    anything.
     """
     for i, row in enumerate(rows):
         for horizon in range(1, pooled.H + 1):
             if row["actual"][horizon - 1] is not None:
-                track_records[row["key"]][horizon][origin + horizon] = float(
-                    predicted[i][horizon - 1]
+                track_records[row["key"]][horizon][origin + horizon] = (
+                    float(predicted[i][horizon - 1]),
+                    int(ranks[i][horizon - 1]),
                 )
 
 
-def _compact_track_record(predictions: dict[int, dict[int, float]]) -> dict:
-    """`{"1": {"start": 1996, "projected_share": [...]}, ...}`, keyed by horizon.
+def _compact_track_record(predictions: dict[int, dict[int, tuple[float, int]]]) -> dict:
+    """`{"1": {"start": 1996, "projected_share": [...], "projected_rank": [...]}}`.
 
-    A start year and a parallel array rather than one object per year: across
+    A start year and parallel arrays rather than one object per year: across
     ~24,700 names the repeated keys would cost the artifact roughly 100 MB,
     which gzip removes on the wire anyway (ADR 0012). A year inside the run the
-    model was never checked on is `None`, not a zero nobody measured, and a
-    horizon with no entries at all is absent rather than empty.
+    model was never checked on is `None` in both arrays, not a zero nobody
+    measured, and a horizon with no entries at all is absent rather than empty.
     `app.services.forecast` expands this back into per-year objects.
     """
     compact = {}
     for horizon, by_year in sorted(predictions.items()):
         first, last = min(by_year), max(by_year)
+        years = range(first, last + 1)
         compact[str(horizon)] = {
             "start": first,
-            "projected_share": [by_year.get(year) for year in range(first, last + 1)],
+            "projected_share": [by_year[year][0] if year in by_year else None for year in years],
+            "projected_rank": [by_year[year][1] if year in by_year else None for year in years],
         }
     return compact
 

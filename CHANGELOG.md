@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.4.0](https://github.com/dwest1507/baby-names-app/compare/baby-names-app-v1.3.0...baby-names-app-v1.4.0) (2026-09-13)
+
+
+### Features
+
+* **frontend:** make the forecast chart name things rather than assess them ([53b4d4b](https://github.com/dwest1507/baby-names-app/commit/53b4d4bea9bd800ca1a2b0b235d63ed37b610026))
+* **frontend:** put the statistics behind a disclosure and retire the holdout panel ([73d7ed6](https://github.com/dwest1507/baby-names-app/commit/73d7ed6440a88f80628c37016f8607b84ab18735))
+* **frontend:** rebuild the home page around a clickable index ([38eefb1](https://github.com/dwest1507/baby-names-app/commit/38eefb100f5c31807175c3631018a04ee1f917b7))
+* **frontend:** show a forecast table under the Name Search chart ([c9b18e7](https://github.com/dwest1507/baby-names-app/commit/c9b18e7cc810a4b5c661c7a48b56a9b5ed11bce6))
+* **frontend:** zoom the Name Search chart by dragging or with the wheel ([ce2b324](https://github.com/dwest1507/baby-names-app/commit/ce2b324214da855a5556409e91aeae2ff9c5e73b))
+* rank every projection against the field it was made in ([c86872a](https://github.com/dwest1507/baby-names-app/commit/c86872a50f81d80e658cdd727e06728bfc7e5404)), closes [#67](https://github.com/dwest1507/baby-names-app/issues/67) [#59](https://github.com/dwest1507/baby-names-app/issues/59)
+* report a horizon-selectable track record on Name Search ([2f0e82b](https://github.com/dwest1507/baby-names-app/commit/2f0e82b14cbb5ff7b7b1dfc13c4443ac4e8abf05))
+
+
+### Bug Fixes
+
+* **search:** round chart axes, median typical miss, and review follow-ups ([289ec66](https://github.com/dwest1507/baby-names-app/commit/289ec666c7a1938ee4480c64600ca99113456ae8))
+
 ## [1.3.0](https://github.com/dwest1507/baby-names-app/compare/baby-names-app-v1.2.0...baby-names-app-v1.3.0) (2026-09-12)
 
 

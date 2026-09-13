@@ -1,18 +1,4 @@
-'use client'
-
-import { useState, useEffect } from 'react'
-import Button from '@/components/ui/Button'
-
-const TAGLINE =
-  'Search 145 years of Social Security data, chart the trends, and forecast where a name is headed next.'
-
-const STATS = [
-  { num: '1880—2025', label: 'Years of data' },
-  // The forecast is the pooled gradient-boosted model, not the per-name ARIMA
-  // fit it replaced. See docs/adr/0010-a-pooled-model-replaces-per-name-arima.md.
-  { num: 'Pooled', label: '5-year forecasts' },
-  { num: 'AI', label: 'Natural-language chat' },
-]
+import { type ReactNode } from 'react'
 
 const HEADLINE_GRADIENT = {
   background:
@@ -22,78 +8,52 @@ const HEADLINE_GRADIENT = {
   backgroundClip: 'text' as const,
 }
 
+// A ledger rather than a row of headline figures: the value is the fact, the
+// label says what it covers. The forecast is the pooled gradient-boosted model,
+// not the per-name ARIMA fit it replaced — docs/adr/0010-*.md.
+const LEDGER: { value: ReactNode; label: string }[] = [
+  { value: '1880—2025', label: '145 years of SSA records' },
+  { value: 'Pooled model', label: '5-year forecasts, conformal bands' },
+  { value: 'Groq', label: 'Questions answered in plain English' },
+]
+
 export default function Hero() {
-  const [typed, setTyped] = useState('')
-
-  useEffect(() => {
-    if (typed.length >= TAGLINE.length) return
-    const t = setTimeout(() => setTyped(TAGLINE.slice(0, typed.length + 1)), 25)
-    return () => clearTimeout(t)
-  }, [typed])
-
   return (
-    <section className="relative z-10 flex items-center overflow-hidden">
-      <div className="relative mx-auto w-full max-w-7xl px-6 py-24 lg:py-32">
-        <div className="max-w-3xl space-y-8">
-          {/* Status badge */}
-          <div className="flex items-center gap-3">
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#0ea5e9] opacity-75" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-[#0ea5e9]" />
-            </span>
-            <span className="font-mono text-[11px] tracking-widest text-[#8a8f98]">
-              SSA dataset · updated yearly
-            </span>
-          </div>
-
-          {/* Headline */}
-          <div>
-            <h1
-              className="text-5xl leading-none font-semibold tracking-[-0.03em] md:text-7xl"
-              style={HEADLINE_GRADIENT}
-            >
-              Baby Names Explorer
-            </h1>
-            <div className="mt-3 flex items-center gap-4">
-              <span className="h-px w-12 bg-[#0ea5e9]/50" />
-              <h2 className="font-mono text-lg tracking-widest text-[#0ea5e9] md:text-xl">
-                Popularity, charted & forecast
-              </h2>
-            </div>
-          </div>
-
-          {/* Typewriter tagline */}
-          <p className="min-h-[3.5rem] max-w-xl text-base leading-relaxed text-[#8a8f98] md:text-lg">
-            <span className="sr-only">{TAGLINE}</span>
-            <span aria-hidden="true">
-              {typed}
-              {typed.length < TAGLINE.length && (
-                <span className="ml-0.5 inline-block h-4 w-0.5 translate-y-0.5 animate-[blink_1s_step-end_infinite] bg-[#0ea5e9] align-middle" />
-              )}
-            </span>
-          </p>
-
-          {/* CTAs */}
-          <div className="flex flex-wrap items-center gap-4">
-            <Button variant="primary" size="lg" href="/search">
-              Search a Name
-            </Button>
-            <Button variant="secondary" size="lg" href="/chat">
-              Ask the AI
-            </Button>
-          </div>
-
-          {/* Stats */}
-          <div className="flex flex-wrap gap-8 border-t border-white/[0.06] pt-6">
-            {STATS.map(({ num, label }) => (
-              <div key={label}>
-                <div className="font-mono text-lg font-semibold text-[#ededef]">{num}</div>
-                <div className="text-xs text-[#8a8f98]">{label}</div>
-              </div>
-            ))}
-          </div>
-        </div>
+    <div className="space-y-7">
+      {/* Eyebrow — the accent rule leads the line instead of splitting it */}
+      <div className="flex items-center gap-3">
+        <span className="h-px w-8 bg-[#0ea5e9]/50" />
+        <span className="font-mono text-[11px] tracking-widest text-[#8a8f98]">
+          Social Security Administration · updated yearly
+        </span>
       </div>
-    </section>
+
+      {/* Headline */}
+      <h1
+        className="text-4xl leading-[1.05] font-semibold tracking-[-0.03em] md:text-6xl"
+        style={HEADLINE_GRADIENT}
+      >
+        Baby Names
+        <br />
+        Explorer
+      </h1>
+
+      <p className="max-w-md text-base leading-relaxed text-[#8a8f98]">
+        A century and a half of naming, charted. Look up where a name has been, where the model
+        thinks it is headed, or just ask the data a question.
+      </p>
+
+      {/* Ledger */}
+      <dl className="max-w-md divide-y divide-white/[0.06] border-y border-white/[0.06]">
+        {LEDGER.map(({ value, label }) => (
+          <div key={label} className="flex items-baseline gap-4 py-2.5">
+            <dt className="w-32 shrink-0 font-mono text-xs tracking-wider text-[#ededef]">
+              {value}
+            </dt>
+            <dd className="text-xs text-[#8a8f98]">{label}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
   )
 }

@@ -92,6 +92,35 @@ DEFAULT_DB = str(REPO_ROOT / "data" / "names.built.db")
 LEVELS = (0.8, 0.95)
 
 
+# How many significant figures a stored float keeps. The page renders a share
+# as `formatPercent(fraction, 4)` — four decimal places of a percentage, so six
+# of the fraction — and six significant figures is the smallest count that is
+# lossless for that at any share magnitude, from a name held by one birth in a
+# million to one held by one in twelve. Full float precision spends nineteen
+# characters saying the same thing, on an artifact downloaded from Hugging Face
+# on every deploy. See
+# docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
+SIGNIFICANT_FIGURES = 6
+
+
+def rounded_payload(value):
+    """A payload with every float in it rounded to `SIGNIFICANT_FIGURES`.
+
+    Applied once, at the boundary where the payload stops being arithmetic and
+    becomes stored bytes, rather than at each place a figure is computed — so a
+    field added to the payload later is rounded by arriving in it, and cannot
+    be forgotten. Integers and strings pass through untouched: a year is not a
+    measurement, and `2026.0` would cost more than it says.
+    """
+    if isinstance(value, dict):
+        return {key: rounded_payload(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [rounded_payload(item) for item in value]
+    if isinstance(value, (float, np.floating)):
+        return float(f"{value:.{SIGNIFICANT_FIGURES}g}")
+    return value
+
+
 def _columns(conn, table: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
 
@@ -379,7 +408,7 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
                 (
                     name,
                     sex,
-                    json.dumps(stored),
+                    json.dumps(rounded_payload(stored)),
                     json.dumps(hits),
                     json.dumps(counts),
                     tier,

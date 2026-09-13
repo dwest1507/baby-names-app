@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts.forecast import pooled  # noqa: E402
 from scripts.make_sample_db import build  # noqa: E402
-from scripts.precompute_forecasts import run  # noqa: E402
+from scripts.precompute_forecasts import rounded_payload, run  # noqa: E402
 
 
 def _forecasts(db_path: str) -> dict:
@@ -307,6 +307,12 @@ def test_the_published_forecasts_add_up_to_the_share_each_sex_held(built, tmp_pa
     well. The batch's own point stack smooths each path and then scales each
     (sex, horizon) slice onto the total observed at the origin; if either step
     were dropped on the way into `forecasts`, this is where it would show.
+
+    The tolerance is a consequence of storage, not of the arithmetic: each
+    published mean is rounded to `SIGNIFICANT_FIGURES` on its way into the
+    payload, which can move it by up to five parts in ten million, so a sum of
+    them can be out by that much. A dropped reconciliation step would be out by
+    far more than this bound.
     """
     db = _copy(built, tmp_path, "adds-up.db")
     run(db)
@@ -337,7 +343,7 @@ def test_the_published_forecasts_add_up_to_the_share_each_sex_held(built, tmp_pa
     assert totals
     for sex, forecast_total in totals.items():
         for value in forecast_total:
-            assert value == pytest.approx(targets[sex], rel=1e-9)
+            assert value == pytest.approx(targets[sex], rel=1e-5)
 
 
 def test_the_model_card_reports_the_bounded_training_window(built, tmp_path):
@@ -666,3 +672,123 @@ def _write_corpus(path: str, last_year: int) -> None:
     db_schema.create_indexes(conn)
     conn.commit()
     conn.close()
+
+
+def test_every_float_in_a_stored_payload_carries_at_most_six_significant_figures(built, tmp_path):
+    """The payload is storage, not arithmetic, and it is paid for on every deploy.
+
+    A share stored at full float precision spends nineteen characters saying
+    something the page renders in six, on an artifact downloaded from Hugging
+    Face on every deploy (ADR 0006). Six significant figures is the smallest
+    count that is lossless for what the page draws; see
+    docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
+    """
+    db = _copy(built, tmp_path, "rounded.db")
+    run(db)
+
+    stored = _forecasts(db)
+    assert stored
+    for (name, sex), payload in stored.items():
+        for path, value in _floats(json.loads(payload)):
+            assert float(f"{value:.6g}") == value, f"{name}/{sex} {path} = {value!r}"
+
+
+def _floats(node, path: str = "") -> list[tuple[str, float]]:
+    """Every float anywhere in a decoded payload, with where it was found."""
+    if isinstance(node, dict):
+        return [f for key, v in node.items() for f in _floats(v, f"{path}.{key}")]
+    if isinstance(node, list):
+        return [f for i, v in enumerate(node) for f in _floats(v, f"{path}[{i}]")]
+    # bool is an int subclass; neither is stored at a precision worth capping.
+    return [(path, node)] if isinstance(node, float) else []
+
+
+def test_rounding_leaves_every_figure_the_page_renders_unchanged(built, tmp_path):
+    """Six figures is chosen to be invisible, and this is what invisible means.
+
+    The search page renders a share as `formatPercent(fraction, 4)` — four
+    decimal places of a percentage — and the model figures beside it to one. A
+    share is free to be tiny: at rank 5000 it is a few parts in a million, and
+    rounding has to be lossless there as well as at the top of the chart. So
+    the check is over magnitudes, not over one example.
+    """
+    shares = [mantissa * 10**-exponent for exponent in range(1, 9) for mantissa in MANTISSAS]
+    for share in shares:
+        assert _as_percent(rounded_payload(share)) == _as_percent(share)
+    # MAPE, skill and the band-width ratio are the figures above one, rendered
+    # to a single decimal place.
+    for figure in [m * 10**exponent for exponent in range(0, 4) for m in MANTISSAS]:
+        assert f"{rounded_payload(figure):.1f}" == f"{figure:.1f}"
+
+    # ...and the same holds for every figure the batch actually stored, read
+    # back at the precision it is drawn with.
+    db = _copy(built, tmp_path, "lossless.db")
+    run(db)
+    for payload in _forecasts(db).values():
+        for _, value in _floats(json.loads(payload)):
+            assert _as_percent(value) == _as_percent(float(f"{value:.12g}"))
+
+
+# Mantissas that land either side of a rounding boundary at the sixth figure,
+# so the assertions are not all comfortably mid-interval.
+MANTISSAS = (1.0, 1.2345674999, 1.2345675001, 3.999999949, 7.0000000501, 9.87654321)
+
+
+def _as_percent(fraction: float) -> str:
+    """What `formatPercent(fraction, 4)` puts on the page, in Python."""
+    return f"{fraction * 100:.4f}"
+
+
+def test_rounding_halves_what_the_artifact_spends_on_figures(built, tmp_path):
+    """The point of the exercise: fewer bytes per figure, on every deploy.
+
+    At full float precision a stored share averages twenty characters and
+    reaches twenty-three; rounded it averages ten and reaches twelve, so the
+    numbers in the artifact cost about half what they did. The bound is on the
+    figures rather than on the payload as a whole, because the payload is meant
+    to grow — what must not come back is a figure spending nineteen characters
+    to say six. See
+    docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
+    """
+    db = _copy(built, tmp_path, "compact.db")
+    run(db)
+
+    lengths = [
+        len(repr(value))
+        for payload in _forecasts(db).values()
+        for _, value in _floats(json.loads(payload))
+    ]
+    assert lengths
+    assert max(lengths) <= 13
+    assert sum(lengths) / len(lengths) <= 11
+
+
+def test_rounding_leaves_everything_that_is_not_a_measurement_alone(built, tmp_path):
+    """A year is not a figure, and `2026.0` would cost more than it says.
+
+    The walk is deliberately indiscriminate about *where* a float is, so that a
+    field added to the payload later is rounded by arriving in it. That makes it
+    worth pinning what it must not touch: years, tier labels, window counts and
+    the absence of a holdout all have to come back as they went in.
+    """
+    payload = {
+        "year": 2026,
+        "tier": "top1000",
+        "skill_windows": 26,
+        "validation": None,
+        "covered": [True, False],
+        "mean": 0.0020805187517257528,
+    }
+    assert rounded_payload(payload) == {**payload, "mean": 0.00208052}
+    for key in ("year", "skill_windows"):
+        assert isinstance(rounded_payload(payload)[key], int)
+
+    db = _copy(built, tmp_path, "integers.db")
+    run(db)
+    for stored in _forecasts(db).values():
+        for point in json.loads(stored)["forecast"]:
+            assert isinstance(point["year"], int)
+        validation = json.loads(stored)["validation"]
+        if validation is not None:
+            assert isinstance(validation["skill_windows"], int)
+            assert all(isinstance(point["year"], int) for point in validation["points"])

@@ -203,10 +203,61 @@ export interface YearRange {
 export interface ChartDomain {
   x: [number, number]
   y: [number, number]
+  /** Where the vertical axis is labelled: every step of one round interval. */
+  yTicks: number[]
 }
 
 /** Space left above and below a zoomed view's values, as a share of their spread. */
 const ZOOM_HEADROOM = 0.05
+
+/** How many intervals the vertical axis is divided into, at most. */
+const VALUE_INTERVALS = 5
+
+/** How many intervals the years along the bottom are divided into, at most. */
+const YEAR_INTERVALS = 8
+
+/** The smallest step of 1, 2 or 5 × a power of ten that is no smaller than `rough`. */
+function niceStep(rough: number): number {
+  const magnitude = 10 ** Math.floor(Math.log10(rough))
+  const scaled = rough / magnitude
+  // A hair of tolerance, or binary noise turns a step of exactly 2 into 5.
+  const unit = scaled <= 1 + 1e-9 ? 1 : scaled <= 2 + 1e-9 ? 2 : scaled <= 5 + 1e-9 ? 5 : 10
+  return unit * magnitude
+}
+
+/** `i × step`, without the binary noise that would print as `0.30000000000000004`. */
+function multiple(i: number, step: number): number {
+  return Number((i * step).toPrecision(12))
+}
+
+/**
+ * A vertical extent widened out to round values, and the ticks along it. An
+ * axis that ends on a raw maximum labels its top with whatever figure that
+ * happened to be (2.21%) and runs the line into the frame; one that ends on a
+ * step does neither.
+ */
+function valueAxis(low: number, high: number): Pick<ChartDomain, 'y' | 'yTicks'> {
+  const step = niceStep((high - low || high || 1) / VALUE_INTERVALS)
+  const first = Math.floor(low / step + 1e-9)
+  const last = Math.max(first + 1, Math.ceil(high / step - 1e-9))
+  const yTicks = Array.from({ length: last - first + 1 }, (_, i) => multiple(first + i, step))
+  return { y: [yTicks[0], yTicks[yTicks.length - 1]], yTicks }
+}
+
+/**
+ * The years to label along the bottom: multiples of a round step, inside the
+ * visible range. Left to itself the axis divides whatever range it is given
+ * evenly, so a zoomed view reads 1904, 1919, 1934 and the full one crowds 2029
+ * against 2030.
+ */
+export function yearTicks([from, to]: [number, number]): number[] {
+  const step = Math.max(1, niceStep((to - from) / YEAR_INTERVALS))
+  const ticks: number[] = []
+  for (let i = Math.ceil(from / step - 1e-9); i * step <= to + 1e-9; i++) {
+    ticks.push(multiple(i, step))
+  }
+  return ticks
+}
 
 /** Every value a row draws: its lines and both edges of each band. */
 function drawnValues(row: Row): number[] {
@@ -224,7 +275,7 @@ export function zoomDomain(rows: Row[], selection: YearRange | null): ChartDomai
     const values = rows.flatMap(drawnValues)
     return {
       x: [rows[0].year, rows[rows.length - 1].year],
-      y: [0, Math.max(...values)],
+      ...valueAxis(0, Math.max(...values)),
     }
   }
 
@@ -239,7 +290,7 @@ export function zoomDomain(rows: Row[], selection: YearRange | null): ChartDomai
   const low = Math.min(...values)
   const high = Math.max(...values)
   const pad = (high - low) * ZOOM_HEADROOM || high * ZOOM_HEADROOM
-  return { x: [from, to], y: [Math.max(0, low - pad), high + pad] }
+  return { x: [from, to], ...valueAxis(Math.max(0, low - pad), high + pad) }
 }
 
 /** How much one wheel step narrows the visible years; zooming out undoes it. */
@@ -309,9 +360,11 @@ export default function TrendChart({ payload }: TrendChartProps) {
   const yearAt = (state: MouseHandlerDataParam) =>
     state.activeLabel === undefined ? undefined : Number(state.activeLabel)
 
-  const yTickDecimals = domain
-    ? Math.min(4, Math.max(2, Math.ceil(-Math.log10((domain.y[1] - domain.y[0]) / 5))))
-    : 2
+  // As many decimal places as it takes to tell one tick from the next, and at
+  // least two. Rounded before the ceiling so 0.01 read back as 0.0099999 does
+  // not earn a third.
+  const yStep = domain && domain.yTicks.length > 1 ? domain.yTicks[1] - domain.yTicks[0] : 1
+  const yTickDecimals = Math.max(2, Math.ceil(Number((-Math.log10(yStep)).toFixed(6))))
 
   const hasForecast = payload.forecast.length > 0
 
@@ -373,8 +426,7 @@ export default function TrendChart({ payload }: TrendChartProps) {
               type="number"
               domain={domain?.x ?? ['dataMin', 'dataMax']}
               allowDataOverflow
-              allowDecimals={false}
-              tickCount={10}
+              ticks={domain ? yearTicks(domain.x) : undefined}
             />
             <YAxis
               tick={AXIS_TICK}
@@ -382,6 +434,7 @@ export default function TrendChart({ payload }: TrendChartProps) {
               tickLine={false}
               tickFormatter={(v: number) => `${v.toFixed(yTickDecimals)}%`}
               domain={domain?.y ?? [0, 'auto']}
+              ticks={domain?.yTicks}
               allowDataOverflow={activeZoom !== null}
               width={64}
             />

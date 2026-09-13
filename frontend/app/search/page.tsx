@@ -105,8 +105,8 @@ function peakPosition(history: NameRow[]): string | null {
 }
 
 /** Signed relative error, `(model − actual) / actual`, to the 0.1% it is shown
- *  at. The summary averages these rather than the unrounded errors, so that
- *  averaging the column by hand gives exactly what the summary says. */
+ *  at. The summary is computed from these rather than the unrounded errors, so
+ *  that working it out from the column by hand gives exactly what it says. */
 function shownError(model: number, actual: number): number {
   const error = (model - actual) / actual
   return (Math.sign(error) * Math.round(Math.abs(error) * 1000)) / 1000
@@ -129,6 +129,14 @@ function formatError(error: number): string {
 function errorColour(error: number | undefined): string {
   if (error === undefined || error === 0) return 'text-[#8a8f98]'
   return error > 0 ? 'text-amber-300' : 'text-sky-300'
+}
+
+/** The middle value, or the midpoint of the middle two — what a reader gets by
+ *  sorting a column and reading off its centre. */
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b)
+  const middle = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
 }
 
 function Fact({ label, value }: { label: string; value: string }) {
@@ -172,6 +180,9 @@ export default function SearchPage() {
     setError(null)
     setHistory(null)
     setForecast(null)
+    // Every name opens on one year ahead (ADR 0012), not on whichever horizon
+    // the last name was left on.
+    setHorizon(1)
 
     getNameHistory(name, sex)
       .then((data) => {
@@ -219,7 +230,9 @@ export default function SearchPage() {
   // docs/adr/0013-projected-rank-against-a-frozen-field.md.
   const projectedRanks = new Map(trackRecord.map((entry) => [entry.year, entry.projected_rank]))
   const horizonLabel = yearsLabel(horizon)
-  // Accuracy summarised from exactly the errors the historical table shows.
+  // Accuracy summarised from exactly the errors the historical table shows. The
+  // typical miss is their median size rather than their mean, so one wild year
+  // on a rare name does not stand for every year around it.
   const checkedErrors =
     history && hasForecast
       ? history.flatMap((row) => {
@@ -227,7 +240,7 @@ export default function SearchPage() {
           return projected === undefined ? [] : [shownError(projected, row.popularity_percent)]
         })
       : []
-  const meanMiss = checkedErrors.reduce((sum, e) => sum + Math.abs(e), 0) / checkedErrors.length
+  const typicalMiss = median(checkedErrors.map(Math.abs))
   const meanError = checkedErrors.reduce((sum, e) => sum + e, 0) / checkedErrors.length
   const peak = history ? peakPosition(history) : null
   const observedYears = history?.length ?? 0
@@ -522,7 +535,7 @@ export default function SearchPage() {
                 <div>
                   <div className="text-xs text-[#8a8f98]">Typical miss</div>
                   <div className="mt-0.5 font-mono text-sm text-[#ededef]">
-                    {(meanMiss * 100).toFixed(1)}%
+                    {(typicalMiss * 100).toFixed(1)}%
                   </div>
                 </div>
                 <div>
@@ -558,6 +571,7 @@ export default function SearchPage() {
                 <tbody>
                   {[...history].reverse().map((row) => {
                     const projected = projectedShares.get(row.year)
+                    const projectedRank = projectedRanks.get(row.year)
                     const error =
                       projected === undefined
                         ? undefined
@@ -575,12 +589,12 @@ export default function SearchPage() {
                           {formatPercent(row.popularity_percent, 4)}
                         </td>
                         <td className="px-6 py-2.5 text-right font-mono text-xs text-[#8a8f98]">
-                          {row.popularity_rank}
+                          {formatRank(row.popularity_rank)}
                         </td>
                         {hasForecast && (
                           <>
                             <td className="px-6 py-2.5 text-right font-mono text-xs text-[#8a8f98]">
-                              {projectedRanks.get(row.year) ?? ''}
+                              {projectedRank === undefined ? '' : formatRank(projectedRank)}
                             </td>
                             <td className="px-6 py-2.5 text-right font-mono text-xs text-[#8a8f98]">
                               {projected === undefined ? '' : formatPercent(projected, 4)}
@@ -689,7 +703,7 @@ export default function SearchPage() {
                   </Card>
                 )}
               </div>
-              {forecast && validation && (
+              {validation && (
                 <Card variant="default" className="mt-6 p-6">
                   <h3 className="text-sm font-medium text-[#ededef]">
                     Errors on the calibration holdout

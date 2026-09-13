@@ -47,9 +47,11 @@ page should not open on its most flattering slice by accident, but it should ope
 reader can interpret.
 
 **Summary accuracy figures are derived from the rows on screen, not stored.** Whatever the visitor
-can see in the Error column is exactly what the summary averages. This is not an optimisation: it
-is the property that makes the summary checkable by hand, and it is unavailable to any design that
-stores per-horizon summaries separately from the series they describe.
+can see in the Error column is exactly what the summary is computed from: the typical miss is the
+column's median size, so a single wild year on a rare name does not stand for every other, and the
+average error is its mean. This is not an optimisation: it is the property that makes the summary
+checkable by hand, and it is unavailable to any design that stores per-horizon summaries separately
+from the series they describe.
 
 **The holdout remains in the batch and leaves the page.** It still sets and measures the conformal
 bands (ADR 0011) — that job is unaffected and unchanged. What is removed is `validation.points`
@@ -76,8 +78,12 @@ composition, not fitting, so ADR 0004 holds.
 
 **Stored floats are rounded to six significant figures.** The payload stores
 `0.0020805187517257528` for a figure the page renders as `0.0021%`. `formatPercent(f, 4)` needs six
-decimal places of the fraction, so six significant figures is lossless at any share magnitude and
-roughly halves what every existing point costs.
+decimal places of the fraction, and six significant figures keeps at least that many for every share
+below 10%, which roughly halves what every existing point costs. It is not strictly lossless:
+rounding twice can carry a value lying just short of a half-way point across it, moving the last
+printed digit by one for about one share in twenty between 1% and 10%, and far fewer below. Fixed
+decimal places would avoid that, but would leave a rare name's share with a single significant
+figure for the Error column to divide by.
 
 ## Considered options
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildChartRows, wheelZoom, zoomDomain } from '@/components/charts/TrendChart'
+import { buildChartRows, wheelZoom, yearTicks, zoomDomain } from '@/components/charts/TrendChart'
 import type { ForecastPayload } from '@/lib/api'
 
 function payload(overrides: Partial<ForecastPayload> = {}): ForecastPayload {
@@ -114,6 +114,25 @@ describe('zoomDomain', () => {
     expect(domain?.y[1]).toBeGreaterThanOrEqual(0.3)
   })
 
+  it('ends the full view on a round value, labelled at even steps', () => {
+    // Peaking at 2.2012%, an axis ending on its raw maximum would label its top
+    // "2.21%" and run the line into the frame.
+    const { rows } = buildChartRows(
+      payload({
+        history: [
+          { year: 2000, value: 0.022012 },
+          { year: 2001, value: 0.02 },
+        ],
+        forecast: [],
+      })
+    )
+
+    const domain = zoomDomain(rows, null)
+
+    expect(domain?.y).toEqual([0, 2.5])
+    expect(domain?.yTicks).toEqual([0, 0.5, 1, 1.5, 2, 2.5])
+  })
+
   it('refits the vertical axis to the years selected, whichever way they were dragged', () => {
     // Recorded shares climb from 0.10% in 2022 to 0.13% in 2025 and the bands
     // reach 0.30% after. Zoomed to 2022–2023 the axis should frame 0.10–0.11%,
@@ -128,6 +147,8 @@ describe('zoomDomain', () => {
     expect(low).toBeLessThanOrEqual(0.1)
     expect(high).toBeGreaterThanOrEqual(0.11)
     expect(high).toBeLessThan(0.12)
+    // Labelled at a round step, not at whatever the padded extremes came to.
+    expect(domain!.yTicks).toEqual([0.095, 0.1, 0.105, 0.11, 0.115])
   })
 
   it('rejects a selection narrower than one year', () => {
@@ -188,5 +209,18 @@ describe('wheelZoom', () => {
 
     expect(range!.to - range!.from).toBeGreaterThanOrEqual(1)
     expect(zoomDomain(rows, range)).not.toBeNull()
+  })
+})
+
+describe('yearTicks', () => {
+  it('labels round years rather than dividing the range evenly', () => {
+    expect(yearTicks([1880, 2030])).toEqual([1880, 1900, 1920, 1940, 1960, 1980, 2000, 2020])
+    // A wheel zoom leaves fractional edges; the labels stay on round years inside them.
+    expect(yearTicks([1904.3, 2024.1])).toEqual([1920, 1940, 1960, 1980, 2000, 2020])
+    expect(yearTicks([1997, 2029])).toEqual([2000, 2005, 2010, 2015, 2020, 2025])
+  })
+
+  it('never labels a year that is not a whole one', () => {
+    expect(yearTicks([2000, 2003])).toEqual([2000, 2001, 2002, 2003])
   })
 })

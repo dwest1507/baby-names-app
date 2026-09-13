@@ -102,11 +102,16 @@ LEVELS = (0.8, 0.95)
 
 # How many significant figures a stored float keeps. The page renders a share
 # as `formatPercent(fraction, 4)` — four decimal places of a percentage, so six
-# of the fraction — and six significant figures is the smallest count that is
-# lossless for that at any share magnitude, from a name held by one birth in a
-# million to one held by one in twelve. Full float precision spends nineteen
-# characters saying the same thing, on an artifact downloaded from Hugging Face
-# on every deploy. See
+# of the fraction — and six significant figures keeps at least that many at
+# every share below one in ten, so no stored figure is coarser than the page
+# prints it. It is not strictly lossless: rounding twice can carry a value lying
+# just short of a half-way point across it and move the last printed digit by
+# one — about one printed share in twenty between 1% and 10%, one in two hundred
+# between 0.1% and 1%, and rarer below. Fixed decimal places would avoid that,
+# but relative errors divide by the share, and six decimal places of a rare
+# name's fraction leave one significant figure to divide by. Full float
+# precision spends nineteen characters on an artifact downloaded from Hugging
+# Face on every deploy. See
 # docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
 SIGNIFICANT_FIGURES = 6
 

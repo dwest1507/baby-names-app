@@ -4,7 +4,7 @@ import { cloneElement, type ReactElement } from 'react'
 import userEvent from '@testing-library/user-event'
 import type { NameRow } from '@/lib/api'
 import { CHART_COLORS } from '@/components/charts/chartTheme'
-import { formatPercent } from '@/lib/format'
+import { formatPercent, formatRank } from '@/lib/format'
 
 const getMeta = vi.fn()
 const getNameHistory = vi.fn()
@@ -421,7 +421,14 @@ describe('SearchPage track record', () => {
       .slice(1)
       .map((row) => within(row).getAllByRole('cell').slice(-1)[0].textContent ?? '')
       .filter((text) => text !== '')
-      .map((text) => Number(text.replace('\u2212', '-').replace('%', '')))
+      .map((text) => Number(text.replaceAll('\u2212', '-').replaceAll('%', '')))
+  }
+
+  /** The middle of a list, or the midpoint of the middle two. */
+  function median(values: number[]): number {
+    const sorted = [...values].sort((a, b) => a - b)
+    const middle = Math.floor(sorted.length / 2)
+    return sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
   }
 
   it('opens on what the model said one year ahead', async () => {
@@ -479,8 +486,8 @@ describe('SearchPage track record', () => {
 
     const row = history.find((entry) => entry.year === 2011)!
     const [rank, projectedRank] = within(rowFor(table, 2011)).getAllByRole('cell').slice(3, 5)
-    expect(rank).toHaveTextContent(String(row.popularity_rank))
-    expect(projectedRank).toHaveTextContent(String(row.popularity_rank + 1))
+    expect(rank).toHaveTextContent(formatRank(row.popularity_rank))
+    expect(projectedRank).toHaveTextContent(formatRank(row.popularity_rank + 1))
   })
 
   it('moves the projected rank with the horizon selector', async () => {
@@ -493,7 +500,7 @@ describe('SearchPage track record', () => {
 
     const row = history.find((entry) => entry.year === 2011)!
     const projectedRank = within(rowFor(table, 2011)).getAllByRole('cell')[4]
-    expect(projectedRank).toHaveTextContent(String(row.popularity_rank + 5))
+    expect(projectedRank).toHaveTextContent(formatRank(row.popularity_rank + 5))
   })
 
   it('leaves a year the model was never checked on blank rather than zero', async () => {
@@ -522,7 +529,7 @@ describe('SearchPage track record', () => {
   })
 
   it('summarises accuracy with figures a reader can check against the error column', async () => {
-    // Derived from the rows on screen, never stored, so averaging the column
+    // Derived from the rows on screen, never stored, so working the column out
     // by hand gives exactly what the summary says. One year ahead, 30 years
     // from 1996: 15 odd years 2% high and 15 even years 1% low, so the typical
     // miss is 1.5% and on average it ran 0.5% high.
@@ -530,13 +537,32 @@ describe('SearchPage track record', () => {
 
     const errors = visibleErrors(table)
     expect(errors).toHaveLength(30)
-    const meanMiss = errors.reduce((sum, e) => sum + Math.abs(e), 0) / errors.length
+    const typicalMiss = median(errors.map(Math.abs))
     const meanError = errors.reduce((sum, e) => sum + e, 0) / errors.length
 
     const summary = screen.getByRole('group', { name: /accuracy/i })
     expect(summary).toHaveTextContent('30 years')
-    expect(within(summary).getByText(`${meanMiss.toFixed(1)}%`)).toBeInTheDocument()
+    expect(within(summary).getByText(`${typicalMiss.toFixed(1)}%`)).toBeInTheDocument()
     expect(within(summary).getByText(`+${meanError.toFixed(1)}%`)).toBeInTheDocument()
+  })
+
+  it('reports the typical miss as the middle of the column, so one wild year does not stand for the rest', async () => {
+    // A rare name's record can hold a year the model missed several times over;
+    // averaged in, it would make every other year read as badly missed too.
+    const years = Array.from({ length: 40 }, (_, i) => 1986 + i)
+    const record = historyFor('Emma', years)
+      .filter((row) => row.year >= 2016)
+      .map((row) => ({
+        year: row.year,
+        projected_share: row.popularity_percent * (row.year === 2020 ? 4 : 1.01),
+        projected_rank: row.popularity_rank,
+      }))
+    await searchEmma({ trackRecord: { '1': record } })
+
+    const summary = screen.getByRole('group', { name: /accuracy/i })
+    expect(summary).toHaveTextContent('10 years')
+    expect(within(summary).getByText('1.0%')).toBeInTheDocument()
+    expect(within(summary).getByText('+30.9%')).toBeInTheDocument()
   })
 
   it('moves the projected share, the error column and the summary together when the horizon changes', async () => {
@@ -565,12 +591,12 @@ describe('SearchPage track record', () => {
 
       const errors = visibleErrors(table)
       expect(errors).toHaveLength(31 - h)
-      const meanMiss = errors.reduce((sum, e) => sum + Math.abs(e), 0) / errors.length
+      const typicalMiss = median(errors.map(Math.abs))
       const meanError = errors.reduce((sum, e) => sum + e, 0) / errors.length
 
       const summary = screen.getByRole('group', { name: /accuracy/i })
       expect(summary).toHaveTextContent(`${errors.length} years`)
-      expect(within(summary).getByText(`${meanMiss.toFixed(1)}%`)).toBeInTheDocument()
+      expect(within(summary).getByText(`${typicalMiss.toFixed(1)}%`)).toBeInTheDocument()
       expect(within(summary).getByText(`+${meanError.toFixed(1)}%`)).toBeInTheDocument()
     }
   })
@@ -584,6 +610,20 @@ describe('SearchPage track record', () => {
 
     expect(screen.getByRole('radio', { name: '2 years' })).toBeChecked()
     expect(screen.getByRole('group', { name: /2 years ahead/i })).toBeInTheDocument()
+  })
+
+  it('opens every new search on one year ahead, whatever the last was left on', async () => {
+    // One year is the slice a reader can interpret first (ADR 0012); a name
+    // looked up next should not inherit a five-year view chosen for another.
+    await searchEmma()
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('radio', { name: '5 years' }))
+
+    await user.clear(screen.getByLabelText('Name'))
+    await user.type(screen.getByLabelText('Name'), 'Emma')
+    await user.click(screen.getByRole('button', { name: 'Search' }))
+
+    await waitFor(() => expect(screen.getByRole('radio', { name: '1 year' })).toBeChecked())
   })
 
   it('shows a short record as short, and says so when a horizon was never checked', async () => {

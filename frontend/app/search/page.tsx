@@ -169,6 +169,11 @@ export default function SearchPage() {
   // scored has none — see the `skill` field in lib/api.ts.
   const skill = validation?.skill
   const forecastBandWidth = forecast ? bandWidth(forecast.forecast) : null
+  // The forecast table's range is the narrower band, so it is headed with the
+  // coverage measured for that band in the stratum this name is served under —
+  // never the nominal 80%. No calibration, no figure. See
+  // docs/adr/0011-conformal-bands-keyed-by-strata.md.
+  const rangeCoverage = forecast?.calibration?.['0.8']?.empirical_coverage
   // The holdout is the window the batch withheld: its first year is the year
   // after the origin the model was trained through.
   const holdoutPoints = validation?.points ?? []
@@ -334,6 +339,50 @@ export default function SearchPage() {
               <p className="mt-4 text-xs leading-relaxed text-[#8a8f98]">{forecastAbsenceReason}</p>
             )}
           </Card>
+
+          {/* The chart made legible to someone who cannot read a shaded
+              region: one row per year still to come, with the narrower band
+              as its likely range. */}
+          {forecast && forecast.forecast.length > 0 && (
+            <Card variant="default" className="overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <caption className="border-b border-white/[0.06] px-6 py-4 text-left text-sm font-medium text-[#ededef]">
+                    Forecast for {displayName}
+                  </caption>
+                  <thead>
+                    <tr className="text-xs text-[#8a8f98]">
+                      <th className="px-6 py-3 font-medium">Year</th>
+                      <th className="px-6 py-3 text-right font-medium">Projected share</th>
+                      <th className="px-6 py-3 text-right font-medium">
+                        Likely range
+                        {rangeCoverage !== undefined && (
+                          <span className="block font-normal">
+                            held {Math.round(rangeCoverage * 100)}% of outcomes
+                          </span>
+                        )}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {forecast.forecast.map((point) => (
+                      <tr key={point.year} className="border-t border-white/[0.04]">
+                        <td className="px-6 py-2.5 font-mono text-xs text-[#ededef]">
+                          {point.year}
+                        </td>
+                        <td className="px-6 py-2.5 text-right font-mono text-xs text-[#ededef]">
+                          {formatPercent(point.mean, 4)}
+                        </td>
+                        <td className="px-6 py-2.5 text-right font-mono text-xs text-[#8a8f98]">
+                          {formatPercent(point.lo80, 4)} – {formatPercent(point.hi80, 4)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
 
           {/* What this name's forecast rests on, beside what the model is */}
           {forecast && (stratum || validation) && (

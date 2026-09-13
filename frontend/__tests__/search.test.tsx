@@ -496,6 +496,81 @@ describe('SearchPage forecast presentation', () => {
   })
 })
 
+describe('SearchPage forecast table', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    getMeta.mockResolvedValue({ min_year: 1960, max_year: NEWEST_YEAR })
+  })
+
+  async function searchEmma(overrides: Parameters<typeof fullForecast>[2] = {}) {
+    const years = Array.from({ length: 40 }, (_, i) => 1986 + i) // ends 2025
+    const history = historyFor('Emma', years)
+    getNameHistory.mockResolvedValue({ name: 'Emma', sex: 'F', history })
+    const payload = fullForecast('Emma', history, overrides)
+    getNameForecast.mockResolvedValue(payload)
+    await search('Emma')
+    return payload
+  }
+
+  it('lists each forecast year with its projected share and likely range', async () => {
+    // The chart made legible to someone who cannot read a shaded region: the
+    // range is the narrower band, because one range per row is all a reader
+    // needs and the wider one is what the chart is for.
+    const payload = await searchEmma()
+
+    const table = await screen.findByRole('table', { name: /forecast/i })
+    const rows = within(table).getAllByRole('row').slice(1) // header row first
+    expect(rows).toHaveLength(payload.forecast.length)
+    payload.forecast.forEach((point, i) => {
+      expect(rows[i]).toHaveTextContent(String(point.year))
+      expect(rows[i]).toHaveTextContent(formatPercent(point.mean, 4))
+      expect(rows[i]).toHaveTextContent(formatPercent(point.lo80, 4))
+      expect(rows[i]).toHaveTextContent(formatPercent(point.hi80, 4))
+      expect(rows[i]).not.toHaveTextContent(formatPercent(point.lo95, 4))
+    })
+  })
+
+  it('heads the range with the coverage measured for this name, never the nominal level', async () => {
+    // A name whose own cell was too thin is served the population's band, and
+    // its calibration row names `*`. The heading follows the row it was
+    // handed, whichever stratum that row describes. See
+    // docs/adr/0011-conformal-bands-keyed-by-strata.md.
+    await searchEmma({
+      stratum: { tier: 'top1000', volatility_bin: 2 },
+      tier: '*',
+      volatilityBin: -1,
+      empirical80: 0.776,
+    })
+
+    const table = await screen.findByRole('table', { name: /forecast/i })
+    const heading = within(table).getByRole('columnheader', { name: /likely range/i })
+    expect(heading).toHaveTextContent('78%')
+    expect(heading).not.toHaveTextContent('80%')
+  })
+
+  it('renders no forecast table for a name with no forecast', async () => {
+    const years = Array.from({ length: 34 }, (_, i) => 1960 + i) // ends 1993
+    const history = historyFor('Debra', years)
+    getNameHistory.mockResolvedValue({ name: 'Debra', sex: 'F', history })
+    getNameForecast.mockResolvedValue(emptyForecast('Debra', history))
+
+    await search('Debra')
+
+    await screen.findByText(/not in current use/i)
+    expect(screen.getByRole('table', { name: /year-by-year/i })).toBeInTheDocument()
+    expect(screen.queryByRole('table', { name: /forecast/i })).toBeNull()
+  })
+
+  it('scrolls within its own container rather than widening the page', async () => {
+    // jsdom lays nothing out, so the observable part of "readable on a narrow
+    // screen" is that the table sits in a box that scrolls horizontally.
+    await searchEmma()
+
+    const table = await screen.findByRole('table', { name: /forecast/i })
+    expect(table.parentElement).toHaveClass('overflow-x-auto')
+  })
+})
+
 describe('SearchPage per-name forecast attributes', () => {
   beforeEach(() => {
     vi.clearAllMocks()

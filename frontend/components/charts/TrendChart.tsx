@@ -5,14 +5,18 @@ import {
   Area,
   CartesianGrid,
   ComposedChart,
+  DefaultLegendContent,
+  type DefaultLegendContentProps,
   Legend,
   Line,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
+  type TooltipContentProps,
   XAxis,
   YAxis,
 } from 'recharts'
+import type { NameType, ValueType } from 'recharts/types/component/DefaultTooltipContent'
 import type { ForecastPayload } from '@/lib/api'
 import {
   AXIS_LINE,
@@ -31,9 +35,99 @@ export interface Row {
   year: number
   history?: number
   forecast?: number
-  predicted?: number
   ci80?: [number, number]
   ci95?: [number, number]
+}
+
+/** History, the forecast that continues it, then the inner and outer interval. */
+const LEGEND_ORDER: (keyof Row)[] = ['history', 'forecast', 'ci80', 'ci95']
+
+type BandKey = 'ci80' | 'ci95'
+
+/**
+ * How opaque each interval looks where a visitor reads it. The one place band
+ * density is decided: the band fills and their legend swatches both derive
+ * from it, so the two match by construction.
+ */
+const BAND_OPACITY: Record<BandKey, number> = { ci95: 0.16, ci80: 0.41 }
+
+/**
+ * The alpha each band is painted with. The inner band is painted over the
+ * outer, so where it sits the two composite to 1 − (1 − outer)(1 − inner);
+ * painted at its target it would render denser than intended. Its raw alpha is
+ * solved for the composite instead.
+ */
+const BAND_FILL_OPACITY: Record<BandKey, number> = {
+  ci95: BAND_OPACITY.ci95,
+  ci80: 1 - (1 - BAND_OPACITY.ci80) / (1 - BAND_OPACITY.ci95),
+}
+
+function withAlpha(hex: string, alpha: number): string {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16))
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
+
+const BAND_SWATCH: Record<BandKey, string> = {
+  ci95: withAlpha(CHART_COLORS.forecast, BAND_OPACITY.ci95),
+  ci80: withAlpha(CHART_COLORS.forecast, BAND_OPACITY.ci80),
+}
+
+/**
+ * recharts draws a band's swatch in the band's own fill at full opacity. Give
+ * each interval the colour its band renders at instead, keeping its label in
+ * the series colour so the text does not fade with the swatch.
+ */
+function BandLegend(props: DefaultLegendContentProps) {
+  const payload = props.payload?.map((entry) => {
+    const swatch = BAND_SWATCH[entry.dataKey as BandKey]
+    if (swatch === undefined) return entry
+    return {
+      ...entry,
+      color: swatch,
+      formatter: (value: string) => <span style={{ color: entry.color }}>{value}</span>,
+    }
+  })
+  return <DefaultLegendContent {...props} payload={payload} />
+}
+
+const formatValue = (percent: number) => `${percent.toFixed(4)}%`
+const formatRange = ([lo, hi]: [number, number]) => `${formatValue(lo)} – ${formatValue(hi)}`
+
+interface TrendTooltipProps extends TooltipContentProps<ValueType, NameType> {
+  label80: string
+  label95: string
+}
+
+/**
+ * What a hovered year says in numbers. A forecast year states its projected
+ * value and both ranges, because the band is where the uncertainty is and a
+ * shaded region is unreadable to anyone who cannot interpret one.
+ */
+function TrendTooltip({ active, payload, label80, label95 }: TrendTooltipProps) {
+  const row = payload?.[0]?.payload as Row | undefined
+  if (!active || row === undefined) return null
+
+  // The last recorded year also carries a forecast value, only so the two lines
+  // meet; what was recorded there is the whole story.
+  const lines: [string, string][] = []
+  if (row.history !== undefined) {
+    lines.push(['Recorded', formatValue(row.history)])
+  } else {
+    if (row.forecast !== undefined) lines.push(['Forecast', formatValue(row.forecast)])
+    if (row.ci80 !== undefined) lines.push([label80, formatRange(row.ci80)])
+    if (row.ci95 !== undefined) lines.push([label95, formatRange(row.ci95)])
+  }
+
+  return (
+    <div style={{ ...TOOLTIP_STYLE, padding: '8px 10px' }}>
+      <p style={TOOLTIP_LABEL_STYLE}>{row.year}</p>
+      {lines.map(([name, value]) => (
+        <p key={name}>
+          {name}: {value}
+        </p>
+      ))}
+    </div>
+  )
 }
 
 function toPercent(fraction: number): number {
@@ -55,11 +149,6 @@ export function buildChartRows(payload: ForecastPayload): {
 
   for (const point of payload.history) {
     byYear.set(point.year, { year: point.year, history: toPercent(point.value) })
-  }
-  for (const point of payload.validation?.points ?? []) {
-    const row = byYear.get(point.year) ?? { year: point.year }
-    row.predicted = toPercent(point.predicted)
-    byYear.set(point.year, row)
   }
 
   // A forecast point for a year that has already been observed would overwrite
@@ -106,7 +195,6 @@ export default function TrendChart({ payload }: TrendChartProps) {
   const { rows, forecastStart } = useMemo(() => buildChartRows(payload), [payload])
 
   const hasForecast = payload.forecast.length > 0
-  const hasValidation = (payload.validation?.points.length ?? 0) > 0
 
   // Bands must be labelled with the coverage they actually achieve — measured
   // by the precompute batch's holdout backtest across every eligible name —
@@ -123,20 +211,6 @@ export default function TrendChart({ payload }: TrendChartProps) {
   }
   const label80 = intervalLabel('0.8')
   const label95 = intervalLabel('0.95')
-
-  // The line carries how well the pooled model has actually done on *this*
-  // name — its skill against a naive "no change" baseline, averaged over
-  // every five-year window it was eligible for since 1995. A visitor reading
-  // the dashed line should not have to look elsewhere to learn that for some
-  // names it is worth less than the flat line they could have drawn
-  // themselves. See docs/adr/0010-a-pooled-model-replaces-per-name-arima.md.
-  const skill = payload.validation?.skill
-  const forecastLabel =
-    skill === undefined
-      ? 'Pooled forecast'
-      : skill >= 0
-        ? `Pooled forecast · ${Math.round(skill * 100)}% better than no change`
-        : `Pooled forecast · ${Math.round(-skill * 100)}% worse than no change`
 
   return (
     <div
@@ -164,16 +238,17 @@ export default function TrendChart({ payload }: TrendChartProps) {
             width={64}
           />
           <Tooltip
-            contentStyle={TOOLTIP_STYLE}
-            labelStyle={TOOLTIP_LABEL_STYLE}
-            formatter={(value, name) => {
-              if (Array.isArray(value)) {
-                return [`${value[0].toFixed(4)}% – ${value[1].toFixed(4)}%`, name]
-              }
-              return [`${Number(value).toFixed(4)}%`, name]
-            }}
+            content={(props) => <TrendTooltip {...props} label80={label80} label95={label95} />}
           />
-          <Legend wrapperStyle={{ fontSize: 12, color: '#8a8f98' }} iconSize={10} />
+          {/* In recharts child order is paint order, and the bands have to be
+              painted beneath the lines. The legend is sorted separately so it
+              reads in the order the chart is understood instead. */}
+          <Legend
+            wrapperStyle={{ fontSize: 12, color: '#8a8f98' }}
+            iconSize={10}
+            content={BandLegend}
+            itemSorter={(item) => LEGEND_ORDER.indexOf(item.dataKey as keyof Row)}
+          />
 
           {hasForecast && (
             <Area
@@ -181,7 +256,7 @@ export default function TrendChart({ payload }: TrendChartProps) {
               name={label95}
               stroke="none"
               fill={CHART_COLORS.forecast}
-              fillOpacity={0.16}
+              fillOpacity={BAND_FILL_OPACITY.ci95}
               connectNulls={false}
               isAnimationActive={false}
               legendType="rect"
@@ -194,7 +269,7 @@ export default function TrendChart({ payload }: TrendChartProps) {
               name={label80}
               stroke="none"
               fill={CHART_COLORS.forecast}
-              fillOpacity={0.3}
+              fillOpacity={BAND_FILL_OPACITY.ci80}
               connectNulls={false}
               isAnimationActive={false}
               legendType="rect"
@@ -221,25 +296,13 @@ export default function TrendChart({ payload }: TrendChartProps) {
                docs/adr/0011-conformal-bands-keyed-by-strata.md. */
             <Line
               dataKey="forecast"
-              name={forecastLabel}
+              name="Forecast"
               stroke={CHART_COLORS.forecast}
               strokeWidth={1.25}
               strokeOpacity={0.92}
               strokeDasharray="6 4"
               dot={false}
               activeDot={{ r: 3 }}
-              connectNulls={false}
-              isAnimationActive={false}
-            />
-          )}
-          {hasValidation && (
-            <Line
-              dataKey="predicted"
-              name="Validation predictions"
-              stroke={CHART_COLORS.validation}
-              strokeWidth={2}
-              strokeDasharray="2 4"
-              dot={{ r: 3, fill: CHART_COLORS.validation, strokeWidth: 0 }}
               connectNulls={false}
               isAnimationActive={false}
             />

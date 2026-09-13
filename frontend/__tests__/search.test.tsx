@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { cloneElement, type ReactElement } from 'react'
 import userEvent from '@testing-library/user-event'
 import type { NameRow } from '@/lib/api'
@@ -316,8 +316,7 @@ describe('SearchPage validation panel', () => {
 
     await search('Emma')
 
-    // Scoped to the validation panel: the chart legend now carries the same
-    // comparison, in the shorter form the line is labelled with.
+    // Scoped to the validation panel: the per-name panel states skill too.
     const panel = (await screen.findByText('Holdout validation')).closest('div')!
     expect(within(panel).getByText(/no change/i)).toHaveTextContent('25.0%')
   })
@@ -452,7 +451,7 @@ describe('SearchPage forecast presentation', () => {
     // history it continues, and the band is more present than it is.
     await searchEmma()
 
-    const forecast = curve('.recharts-line-curve[name^="Pooled forecast"]')
+    const forecast = curve('.recharts-line-curve[name="Forecast"]')
     const history = curve('.recharts-line-curve[name="Historical"]')
     const bands = [...document.querySelectorAll('.recharts-area-area')] as SVGElement[]
 
@@ -465,24 +464,150 @@ describe('SearchPage forecast presentation', () => {
     expect(inner).toBeGreaterThanOrEqual(0.25)
   })
 
-  it("labels the forecast line with this name's measured skill", async () => {
-    // The legend is where a visitor reads what the dashed line is. Naming the
-    // model without saying how well it has done on *this* name invites the
-    // line to be trusted uniformly, which is exactly what the measurements
-    // say it should not be.
-    await searchEmma({ skill: 0.25 })
+  it('paints the bands beneath the lines, whatever order the legend reads in', async () => {
+    // SVG has no z-index: whatever is painted later covers what came before.
+    await searchEmma()
 
-    const label = curve('.recharts-line-curve[name^="Pooled forecast"]').getAttribute('name')!
-    expect(label).toMatch(/25%/)
-    expect(screen.getByText(label)).toBeInTheDocument()
+    const bands = [...document.querySelectorAll('.recharts-area-area')]
+    const lines = [...document.querySelectorAll('.recharts-line-curve')]
+    expect(bands).toHaveLength(2)
+    for (const band of bands) {
+      for (const line of lines) {
+        expect(band.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      }
+    }
   })
 
-  it('says plainly on the line when the model loses to no-change on this name', async () => {
+  it('names the forecast line in the legend without grading it', async () => {
+    // The legend names things; how well the model has done on this name is
+    // reported on the page, where a losing skill is still stated plainly.
     await searchEmma({ skill: -0.1 })
 
-    const label = curve('.recharts-line-curve[name^="Pooled forecast"]').getAttribute('name')!
-    expect(label).toMatch(/worse than no change/i)
-    expect(screen.getByText(label)).toBeInTheDocument()
+    expect(legendLabels()).toContain('Forecast')
+    const legend = document.querySelector('.recharts-legend-wrapper')!
+    expect(legend.textContent).not.toMatch(/no change|better|worse|skill/i)
+  })
+
+  const legendLabels = () =>
+    [...document.querySelectorAll('.recharts-legend-item-text')].map((item) => item.textContent)
+
+  it('reads the legend in the order the chart is understood', async () => {
+    // History, then the line that continues it, then the likelier interval
+    // before the wider one — whatever order the series are painted in.
+    await searchEmma({ empirical80: 0.44, empirical95: 0.51 })
+
+    expect(legendLabels()).toEqual(['Historical', 'Forecast', '44% interval', '51% interval'])
+  })
+
+  /** How opaque an element's fill renders: its colour's alpha times fill-opacity. */
+  function fillAlpha(element: Element): number {
+    const fill = element.getAttribute('fill') ?? ''
+    const rgba = fill.match(/rgba\([^)]*,\s*([\d.]+)\)/)
+    const colourAlpha = rgba ? Number(rgba[1]) : 1
+    const opacity = element.getAttribute('fill-opacity')
+    return colourAlpha * (opacity === null ? 1 : Number(opacity))
+  }
+
+  it("gives each interval's swatch the opacity its band actually renders at", async () => {
+    // The inner band is painted over the outer one, so where it sits the two
+    // composite: what a visitor sees there is not the inner band's own alpha.
+    await searchEmma({ empirical80: 0.44, empirical95: 0.51 })
+
+    const outerBand = fillAlpha(curve('.recharts-area-area[name="51% interval"]'))
+    const innerBand = fillAlpha(curve('.recharts-area-area[name="44% interval"]'))
+    const rendered = { outer: outerBand, inner: 1 - (1 - outerBand) * (1 - innerBand) }
+
+    const swatch = (label: string) =>
+      fillAlpha(
+        screen.getByLabelText(`${label} legend icon`).querySelector('.recharts-legend-icon')!
+      )
+    expect(swatch('51% interval')).toBeCloseTo(rendered.outer, 3)
+    expect(swatch('44% interval')).toBeCloseTo(rendered.inner, 3)
+  })
+
+  /**
+   * Hover the plot above a year and return the tooltip it opens. The chart is
+   * 800 wide; the y-axis takes the first 72px and the right margin the last
+   * 16, so years spread evenly across the rest.
+   */
+  async function hoverYear(year: number, [first, last]: [number, number]) {
+    const plotLeft = 72
+    const plotRight = 784
+    const x = plotLeft + ((year - first) / (last - first)) * (plotRight - plotLeft)
+    fireEvent.mouseMove(document.querySelector('.recharts-wrapper')!, { clientX: x, clientY: 200 })
+    return waitFor(() => {
+      const tooltip = document.querySelector('.recharts-tooltip-wrapper')
+      if (!tooltip?.textContent?.includes(String(year))) throw new Error(`no tooltip for ${year}`)
+      return tooltip as HTMLElement
+    })
+  }
+
+  it('states the projected value and both ranges when a forecast year is hovered', async () => {
+    // The band carries the uncertainty, and a shaded region is unreadable to
+    // anyone who cannot interpret one: hovering says it in numbers.
+    await searchEmma()
+
+    const tooltip = await hoverYear(2028, [1986, 2030])
+
+    expect(tooltip).toHaveTextContent('0.2000%')
+    expect(tooltip).toHaveTextContent('0.1500% – 0.2500%')
+    expect(tooltip).toHaveTextContent('0.1000% – 0.3000%')
+  })
+
+  it("names each range by the coverage measured for this name's stratum", async () => {
+    // Without its measured coverage the two ranges differ only by width, and
+    // the reader supplies a confidence level of their own. See
+    // docs/adr/0011-conformal-bands-keyed-by-strata.md.
+    await searchEmma({ empirical80: 0.79, empirical95: 0.94 })
+
+    const tooltip = await hoverYear(2028, [1986, 2030])
+
+    expect(tooltip).toHaveTextContent('79% interval: 0.1500% – 0.2500%')
+    expect(tooltip).toHaveTextContent('94% interval: 0.1000% – 0.3000%')
+    expect(tooltip).not.toHaveTextContent(/80%|95%/)
+  })
+
+  it('makes no accuracy claim when a forecast year is hovered', async () => {
+    // Skill is reported on the page; the tooltip identifies, it does not grade.
+    await searchEmma({ skill: -0.1 })
+
+    const tooltip = await hoverYear(2028, [1986, 2030])
+
+    expect(tooltip).not.toHaveTextContent(/no change|better|worse|skill|accura/i)
+  })
+
+  it('states the recorded value when a recorded year is hovered', async () => {
+    const history = await searchEmma()
+
+    const tooltip = await hoverYear(2000, [1986, 2030])
+
+    const recorded = history.find((row) => row.year === 2000)!.popularity_percent
+    expect(tooltip).toHaveTextContent(formatPercent(recorded, 4))
+  })
+
+  it('reports the last recorded year as recorded, not as the start of the forecast', async () => {
+    // The forecast line is drawn back to the last observed point so the two
+    // lines meet; that join is not a projection of a year already recorded.
+    const history = await searchEmma()
+
+    const tooltip = await hoverYear(2025, [1986, 2030])
+
+    expect(tooltip).toHaveTextContent(formatPercent(history.at(-1)!.popularity_percent, 4))
+    expect(tooltip).not.toHaveTextContent(/forecast|interval/i)
+  })
+
+  it('writes a rare name’s share in fixed decimals, never scientific notation', async () => {
+    const years = Array.from({ length: 40 }, (_, i) => 1986 + i)
+    const history = historyFor('Emma', years).map((row) => ({ ...row, popularity_percent: 3e-8 }))
+    getNameHistory.mockResolvedValue({ name: 'Emma', sex: 'F', history })
+    getNameForecast.mockResolvedValue(fullForecast('Emma', history))
+    await search('Emma')
+    await screen.findByLabelText(/trend and forecast for Emma/i)
+
+    const tooltip = await hoverYear(2000, [1986, 2030])
+
+    expect(tooltip).toHaveTextContent('0.0000%')
+    expect(tooltip.textContent).not.toMatch(/\de[-+]?\d/i)
   })
 
   it('draws no point markers on the forecast line', async () => {
@@ -664,7 +789,7 @@ describe('SearchPage pooled model', () => {
   it('names the model that actually produced the line, not ARIMA', async () => {
     await searchWithForecast()
 
-    await waitFor(() => expect(screen.getByText(/^Pooled forecast/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(MODEL_CARD.model_name)).toBeInTheDocument())
     expect(document.body.textContent).not.toMatch(/ARIMA/)
   })
 

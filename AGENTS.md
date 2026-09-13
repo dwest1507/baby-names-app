@@ -80,6 +80,15 @@ Browser → Next.js (:3000) → /api/[...path]/route.ts (proxy) → FastAPI (:80
   and `scikit-learn` are dev-group dependencies and never reach the runtime image.
   `backend/app/services/forecast.py` holds only what the request path uses — the ADR 0001
   eligibility rule and the response composer, which fits nothing.
+- Every projection carries a **projected rank** beside its share, and ranking happens only in the
+  batch: `pooled.rank_against_field` is a pure function over one `(origin, horizon, sex)` slice, and
+  what it ranks against is the whole field `pooled.observed_field` read off that origin — the
+  eligible names at what the model said, every other name recorded that year held at the share it
+  was recorded with. Ranking against the forecastable names alone is one sort cheaper and
+  progressively generous below the top 1000, which `/search` would show as a systematic gap between
+  two adjacent columns; see `docs/adr/0013-projected-rank-against-a-frozen-field.md`. The ranks are
+  stored in the compact track record's third parallel array and on each forecast point, so the
+  request path still only expands arrays (ADR 0004).
 - The shaded bands are conformal, not model-derived: `pooled.strata_bands` takes the quantiles
   of the fit's own five-year log residuals within each `(popularity tier, volatility bin)`
   stratum, so a volatile name gets a wider band than a steady one at the same rank. A stratum
@@ -97,11 +106,16 @@ Browser → Next.js (:3000) → /api/[...path]/route.ts (proxy) → FastAPI (:80
   says `*`. `/search` labels the name from `stratum` and the band from `calibration`.
 - `/search` presents the forecast as a band with a line through it, not a trajectory: the shaded
   interval is the dense object, the central line is thin, dimmed and dotless, and its legend
-  entry carries this name's measured skill against no-change. Beside the global model card sits a
-  per-name panel — skill, popularity tier, volatility bin, band width, position against the
-  name's own peak — where the ARIMA order and residual p-values used to be. Band width and peak
-  position are derived on the page from the forecast points and history it already has; tier and
-  bin are not derivable and come from `stratum`.
+  entry reads plainly "Forecast". Under the chart the evidence a non-statistician can read comes
+  first — the forecast table, then the year-by-year table with its horizon-selectable track
+  record — and the technical figures sit last, behind a disclosure collapsed by default
+  (`components/ui/Disclosure.tsx`): the global model card, a per-name panel — skill, popularity
+  tier, volatility bin, band width, position against the name's own peak — and the holdout's
+  MAE/RMSE/MAPE, labelled as what sets the bands rather than as what the model said. Band width
+  and peak position are derived on the page from the forecast points and history it already has;
+  tier and bin are not derivable and come from `stratum`. The "worse than no change" warning is
+  never behind the disclosure, and the track record is the page's only answer to what the model
+  predicted for a recorded year (ADR 0012).
 - `backend/scripts/forecast/arima.py` is the frozen previous pipeline. Nothing in the batch
   calls it; `research/forecasting/methods.py` imports it so rounds 1-6 of the benchmark stay
   reproducible, which is why `statsmodels` and `scipy` remain dev-group dependencies.

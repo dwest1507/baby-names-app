@@ -505,3 +505,88 @@ def test_a_forecast_from_an_artifact_that_predates_the_strata_still_serves(
     assert body["forecast"]
     assert body["calibration"] == {}
     assert body["stratum"] is None
+
+
+def test_forecast_carries_what_the_model_said_at_every_horizon_year_by_year():
+    """The track record reaches the page as one entry per year, not as arrays.
+
+    Stored compactly and expanded here — composition, not fitting, so the
+    request path is still a lookup (ADR 0004). Emma is recorded in every year
+    of the sample, so she was eligible at every origin from 1995, and for each
+    horizon `h` every year from `1995 + h` to the newest carries what the fit
+    `h` years earlier predicted for it. See
+    docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
+    """
+    response = client.get("/api/names/emma/forecast", params={"sex": "F"})
+    assert response.status_code == 200
+    body = response.json()
+
+    newest = body["history"][-1]["year"]
+    assert set(body["track_record"]) == {"1", "2", "3", "4", "5"}
+    for horizon, entries in body["track_record"].items():
+        assert [entry["year"] for entry in entries] == list(range(1995 + int(horizon), newest + 1))
+        for entry in entries:
+            assert set(entry) == {"year", "projected_share", "projected_rank"}
+            assert entry["projected_share"] > 0
+
+
+def test_forecast_no_longer_serves_the_holdout_window_point_by_point():
+    """Two answers to "what did the model say about 2023" cannot share a page.
+
+    The holdout's points were predicted from one origin at five different
+    horizons; the track record answers the same question at one horizon from
+    many origins. The holdout still measures the bands (ADR 0011) and its
+    summary figures remain, but its points leave the contract. See
+    docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
+    """
+    response = client.get("/api/names/emma/forecast", params={"sex": "F"})
+    assert response.status_code == 200
+    validation = response.json()["validation"]
+
+    assert validation is not None
+    assert "mae" in validation
+    assert "points" not in validation
+
+
+def test_a_name_eligible_at_few_origins_shows_a_short_track_record():
+    """Aria clears the ten-year minimum only partway through the span.
+
+    She was never forecast from the origins before that, so her record starts
+    late and is short — not padded back to 2000 with entries nobody predicted.
+    """
+    response = client.get("/api/names/aria/forecast", params={"sex": "F"})
+    assert response.status_code == 200
+    body = response.json()
+
+    newest = body["history"][-1]["year"]
+    first_eligible_origin = body["history"][9]["year"]
+    for horizon, entries in body["track_record"].items():
+        years = [entry["year"] for entry in entries]
+        assert years
+        assert len(years) < 26
+        assert years[0] >= first_eligible_origin + int(horizon)
+        assert years[-1] == newest
+    assert len(body["track_record"]["5"]) >= body["validation"]["skill_windows"]
+
+
+def test_every_projection_reaches_the_page_with_the_rank_it_earned():
+    """ "Will it still be in the top ten?" — answered, and answered by the batch.
+
+    A rank is a position among every other name, so it cannot be derived from
+    one name's payload at request time. It is computed once against the whole
+    field observed at each origin and stored beside the share, and the request
+    path only expands the arrays it was given. See
+    docs/adr/0013-projected-rank-against-a-frozen-field.md.
+    """
+    response = client.get("/api/names/emma/forecast", params={"sex": "F"})
+    assert response.status_code == 200
+    body = response.json()
+
+    for point in body["forecast"]:
+        assert isinstance(point["projected_rank"], int)
+        assert point["projected_rank"] >= 1
+    for entries in body["track_record"].values():
+        assert entries
+        for entry in entries:
+            assert isinstance(entry["projected_rank"], int)
+            assert entry["projected_rank"] >= 1

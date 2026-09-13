@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts.forecast import pooled  # noqa: E402
 from scripts.make_sample_db import build  # noqa: E402
-from scripts.precompute_forecasts import run  # noqa: E402
+from scripts.precompute_forecasts import rounded_payload, run  # noqa: E402
 
 
 def _forecasts(db_path: str) -> dict:
@@ -201,8 +201,7 @@ def test_validation_scores_the_five_years_before_the_newest_one(built, tmp_path)
     """The holdout has to be fully observed, or it is not a holdout.
 
     Training at five years back and scoring against what actually happened is
-    what makes the search page's predicted-against-actual table checkable
-    against recorded history.
+    what lets the coverage measured there describe bands nobody tuned to it.
     """
     db = _copy(built, tmp_path, "validation.db")
     result = run(db)
@@ -220,9 +219,7 @@ def test_validation_scores_the_five_years_before_the_newest_one(built, tmp_path)
     scored = [v for v in validations if v is not None]
     assert scored
     for validation in scored:
-        assert [point["year"] for point in validation["points"]] == list(
-            range(newest - 4, newest + 1)
-        )
+        assert {"mae", "rmse", "mape"} <= set(validation)
 
 
 def test_coverage_is_stored_per_name_and_never_served(built, tmp_path):
@@ -307,6 +304,12 @@ def test_the_published_forecasts_add_up_to_the_share_each_sex_held(built, tmp_pa
     well. The batch's own point stack smooths each path and then scales each
     (sex, horizon) slice onto the total observed at the origin; if either step
     were dropped on the way into `forecasts`, this is where it would show.
+
+    The tolerance is a consequence of storage, not of the arithmetic: each
+    published mean is rounded to `SIGNIFICANT_FIGURES` on its way into the
+    payload, which can move it by up to five parts in ten million, so a sum of
+    them can be out by that much. A dropped reconciliation step would be out by
+    far more than this bound.
     """
     db = _copy(built, tmp_path, "adds-up.db")
     run(db)
@@ -337,7 +340,7 @@ def test_the_published_forecasts_add_up_to_the_share_each_sex_held(built, tmp_pa
     assert totals
     for sex, forecast_total in totals.items():
         for value in forecast_total:
-            assert value == pytest.approx(targets[sex], rel=1e-9)
+            assert value == pytest.approx(targets[sex], rel=1e-5)
 
 
 def test_the_model_card_reports_the_bounded_training_window(built, tmp_path):
@@ -666,3 +669,306 @@ def _write_corpus(path: str, last_year: int) -> None:
     db_schema.create_indexes(conn)
     conn.commit()
     conn.close()
+
+
+def test_every_float_in_a_stored_payload_carries_at_most_six_significant_figures(built, tmp_path):
+    """The payload is storage, not arithmetic, and it is paid for on every deploy.
+
+    A share stored at full float precision spends nineteen characters saying
+    something the page renders in six, on an artifact downloaded from Hugging
+    Face on every deploy (ADR 0006). Six significant figures is the smallest
+    count that is lossless for what the page draws; see
+    docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
+    """
+    db = _copy(built, tmp_path, "rounded.db")
+    run(db)
+
+    stored = _forecasts(db)
+    assert stored
+    for (name, sex), payload in stored.items():
+        for path, value in _floats(json.loads(payload)):
+            assert float(f"{value:.6g}") == value, f"{name}/{sex} {path} = {value!r}"
+
+
+def _floats(node, path: str = "") -> list[tuple[str, float]]:
+    """Every float anywhere in a decoded payload, with where it was found."""
+    if isinstance(node, dict):
+        return [f for key, v in node.items() for f in _floats(v, f"{path}.{key}")]
+    if isinstance(node, list):
+        return [f for i, v in enumerate(node) for f in _floats(v, f"{path}[{i}]")]
+    # bool is an int subclass; neither is stored at a precision worth capping.
+    return [(path, node)] if isinstance(node, float) else []
+
+
+def test_rounding_leaves_every_figure_the_page_renders_unchanged(built, tmp_path):
+    """Six figures is chosen to be invisible, and this is what invisible means.
+
+    The search page renders a share as `formatPercent(fraction, 4)` — four
+    decimal places of a percentage — and the model figures beside it to one. A
+    share is free to be tiny: at rank 5000 it is a few parts in a million, and
+    rounding has to be lossless there as well as at the top of the chart. So
+    the check is over magnitudes, not over one example.
+    """
+    shares = [mantissa * 10**-exponent for exponent in range(1, 9) for mantissa in MANTISSAS]
+    for share in shares:
+        assert _as_percent(rounded_payload(share)) == _as_percent(share)
+    # MAPE, skill and the band-width ratio are the figures above one, rendered
+    # to a single decimal place.
+    for figure in [m * 10**exponent for exponent in range(0, 4) for m in MANTISSAS]:
+        assert f"{rounded_payload(figure):.1f}" == f"{figure:.1f}"
+
+    # ...and the same holds for every figure the batch actually stored, read
+    # back at the precision it is drawn with.
+    db = _copy(built, tmp_path, "lossless.db")
+    run(db)
+    for payload in _forecasts(db).values():
+        for _, value in _floats(json.loads(payload)):
+            assert _as_percent(value) == _as_percent(float(f"{value:.12g}"))
+
+
+# Mantissas that land either side of a rounding boundary at the sixth figure,
+# so the assertions are not all comfortably mid-interval.
+MANTISSAS = (1.0, 1.2345674999, 1.2345675001, 3.999999949, 7.0000000501, 9.87654321)
+
+
+def _as_percent(fraction: float) -> str:
+    """What `formatPercent(fraction, 4)` puts on the page, in Python."""
+    return f"{fraction * 100:.4f}"
+
+
+def test_rounding_halves_what_the_artifact_spends_on_figures(built, tmp_path):
+    """The point of the exercise: fewer bytes per figure, on every deploy.
+
+    At full float precision a stored share averages twenty characters and
+    reaches twenty-three; rounded it averages ten and reaches twelve, so the
+    numbers in the artifact cost about half what they did. The bound is on the
+    figures rather than on the payload as a whole, because the payload is meant
+    to grow — what must not come back is a figure spending nineteen characters
+    to say six. See
+    docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
+    """
+    db = _copy(built, tmp_path, "compact.db")
+    run(db)
+
+    lengths = [
+        len(repr(value))
+        for payload in _forecasts(db).values()
+        for _, value in _floats(json.loads(payload))
+    ]
+    assert lengths
+    assert max(lengths) <= 13
+    assert sum(lengths) / len(lengths) <= 11
+
+
+def test_rounding_leaves_everything_that_is_not_a_measurement_alone(built, tmp_path):
+    """A year is not a figure, and `2026.0` would cost more than it says.
+
+    The walk is deliberately indiscriminate about *where* a float is, so that a
+    field added to the payload later is rounded by arriving in it. That makes it
+    worth pinning what it must not touch: years, tier labels, window counts and
+    the absence of a holdout all have to come back as they went in.
+    """
+    payload = {
+        "year": 2026,
+        "tier": "top1000",
+        "skill_windows": 26,
+        "validation": None,
+        "covered": [True, False],
+        "mean": 0.0020805187517257528,
+    }
+    assert rounded_payload(payload) == {**payload, "mean": 0.00208052}
+    for key in ("year", "skill_windows"):
+        assert isinstance(rounded_payload(payload)[key], int)
+
+    db = _copy(built, tmp_path, "integers.db")
+    run(db)
+    for stored in _forecasts(db).values():
+        for point in json.loads(stored)["forecast"]:
+            assert isinstance(point["year"], int)
+        validation = json.loads(stored)["validation"]
+        if validation is not None:
+            assert isinstance(validation["skill_windows"], int)
+        for series in json.loads(stored)["track_record"].values():
+            assert isinstance(series["start"], int)
+
+
+def test_every_horizon_of_the_track_record_reaches_the_newest_observed_year(built, tmp_path):
+    """The batch predicts every eligible name at every origin; it keeps what it said.
+
+    For horizon `h`, year `Y`'s entry is what the fit at origin `Y - h`
+    predicted. The scored span ends five years back, so a one-year record built
+    from it alone would stop four years short of the newest year — exactly the
+    years a visitor looks at first. The origins after the span are fitted too,
+    for the horizons whose outcomes they can already be checked against.
+
+    Stored compactly — a start year and a parallel array of shares — because
+    per-year objects would cost the artifact roughly 100 MB for keys that gzip
+    already removes on the wire. See
+    docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
+    """
+    db = _copy(built, tmp_path, "track-record.db")
+    result = run(db)
+    span = result["backtest"]["origins"]
+    newest = result["origins"]["production"]
+
+    payloads = [json.loads(payload) for payload in _forecasts(db).values()]
+    scored = [payload for payload in payloads if payload["validation"] is not None]
+    assert scored
+    for payload in payloads:
+        for horizon, series in payload["track_record"].items():
+            assert horizon in {"1", "2", "3", "4", "5"}
+            assert set(series) == {"start", "projected_share", "projected_rank"}
+            assert isinstance(series["start"], int)
+            shares = series["projected_share"]
+            years = range(series["start"], series["start"] + len(shares))
+            assert years.start >= span[0] + int(horizon)
+            assert years.stop - 1 <= newest
+            assert shares[0] is not None and shares[-1] is not None
+            assert all(share is None or share > 0 for share in shares)
+
+    for payload in scored:
+        # Every window skill was measured on left the prediction it was measured on.
+        entries = [share for share in payload["track_record"]["5"]["projected_share"] if share]
+        assert len(entries) >= payload["validation"]["skill_windows"]
+
+    # A name eligible at every origin since 1995 carries 30 entries one year
+    # ahead down to 26 five years ahead, and every one of those series ends in
+    # the newest year.
+    longest = max(scored, key=lambda payload: payload["validation"]["skill_windows"])
+    for horizon in range(1, pooled.H + 1):
+        series = longest["track_record"][str(horizon)]
+        assert series["start"] == span[0] + horizon
+        assert series["start"] + len(series["projected_share"]) - 1 == newest
+        assert all(share is not None for share in series["projected_share"])
+    assert len(longest["track_record"]["1"]["projected_share"]) == len(span) + pooled.H - 1
+
+
+def test_skill_and_the_deploy_gates_scores_rest_on_the_scored_span_alone(built, tmp_path):
+    """The origins fitted for the track record must not move what the gate certifies.
+
+    Per-Name Skill, `BacktestTally` and `model_evaluation` are defined on closed
+    five-year windows. The origins after the span have only shorter windows
+    closed, and a one-year window entering that arithmetic would shift the
+    deploy gate's figures without anyone deciding to. So the artifact's scores
+    must be exactly what tallying the scored span — and nothing else — gives.
+    See docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
+    """
+    db = _copy(built, tmp_path, "scored-span.db")
+    result = run(db)
+    newest = result["origins"]["production"]
+    span = pooled.backtest_span(newest)
+    assert set(pooled.track_record_origins(newest)) > set(span)
+
+    conn = sqlite3.connect(db)
+    try:
+        window = pooled.TrainingWindow(list(pooled.stream_series(conn)))
+    finally:
+        conn.close()
+    tally = pooled.BacktestTally()
+    for origin in span:
+        training, rows = window.advance(origin)
+        models = pooled.train(training)
+        tally.add(origin, rows, pooled.point_forecasts(models, rows, pooled.growth_caps(training)))
+
+    assert _model_evaluation(db) == tally.evaluation()
+    expected = tally.skill_per_name()
+    scored = {
+        key: json.loads(payload)["validation"]
+        for key, payload in _forecasts(db).items()
+        if json.loads(payload)["validation"] is not None
+    }
+    assert scored
+    for (name, sex), validation in scored.items():
+        skill = expected[f"{name}|{sex}"]
+        assert validation["skill"] == rounded_payload(skill["skill"])
+        assert validation["skill_windows"] == skill["skill_windows"]
+
+
+def test_a_name_first_eligible_after_the_span_has_no_five_year_record(built, tmp_path):
+    """A short record is shown as short, and a horizon never checked is absent.
+
+    Recorded from 2012, a name clears the ten-year minimum at origin 2021 —
+    after the scored span. It can be checked one to four years ahead, but no
+    origin it was eligible at has a closed five-year window, so it carries no
+    five-year series at all rather than an empty or fabricated one, and no
+    skill.
+    """
+    db = _copy(built, tmp_path, "late-arrival.db")
+    conn = sqlite3.connect(db)
+    try:
+        (newest,) = conn.execute("SELECT MAX(year) FROM names").fetchone()
+        conn.executemany(
+            "INSERT INTO names VALUES (?, ?, ?, ?, ?, ?)",
+            [("Zelda", "F", 3600, year, 0.002, 5) for year in range(newest - 13, newest + 1)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    run(db)
+
+    payload = json.loads(_forecasts(db)[("zelda", "F")])
+    record = payload["track_record"]
+    assert set(record) == {"1", "2", "3", "4"}
+    first_eligible_origin = newest - 4
+    for horizon, series in record.items():
+        assert series["start"] == first_eligible_origin + int(horizon)
+        assert series["start"] + len(series["projected_share"]) - 1 == newest
+    assert payload["validation"] is None or "skill" not in payload["validation"]
+
+
+def test_every_projection_carries_a_rank_against_the_whole_observed_field(built, tmp_path):
+    """A projected share is only half of "will it still be in the top ten?".
+
+    The batch is the only place a rank can be computed — a rank is a position
+    among every other name, and the request path holds one name (ADR 0004). So
+    every forecast point and every track record entry leaves the batch with the
+    rank its projection earned, against the whole field observed at the origin:
+    the eligible names at what the model said, and everyone else held where
+    they were last seen. See
+    docs/adr/0013-projected-rank-against-a-frozen-field.md.
+    """
+    db = _copy(built, tmp_path, "projected-rank.db")
+    newest = run(db)["origins"]["production"]
+    payloads = {key: json.loads(payload) for key, payload in _forecasts(db).items()}
+
+    for payload in payloads.values():
+        for point in payload["forecast"]:
+            assert isinstance(point["projected_rank"], int)
+            assert point["projected_rank"] >= 1
+        for series in payload["track_record"].values():
+            assert set(series) == {"start", "projected_share", "projected_rank"}
+            shares, ranks = series["projected_share"], series["projected_rank"]
+            assert len(ranks) == len(shares)
+            # A year the model was never checked on has neither, rather than a
+            # rank against a projection that was never made.
+            assert [share is None for share in shares] == [rank is None for rank in ranks]
+            assert all(rank is None or rank >= 1 for rank in ranks)
+
+    conn = sqlite3.connect(db)
+    try:
+        series = list(pooled.stream_series(conn))
+    finally:
+        conn.close()
+    field = pooled.observed_field(series, newest)
+    # Mateo is recorded in the newest year but has too little history to be
+    # forecast, so he is in the field without ever being ranked in it.
+    assert "mateo|M" in field
+    assert ("mateo", "M") not in payloads
+
+    for sex in ("F", "M"):
+        for horizon in range(pooled.H):
+            projected = {
+                f"{name}|{row_sex}": payload["forecast"][horizon]["mean"]
+                for (name, row_sex), payload in payloads.items()
+                if row_sex == sex
+            }
+            # Ranked within a sex, as `popularity_rank` is: the field a name
+            # competes in is the names of its own sex observed that year.
+            same_sex = {key: share for key, share in field.items() if key.endswith(f"|{sex}")}
+            expected = pooled.rank_against_field(projected, same_sex)
+            for (name, row_sex), payload in payloads.items():
+                if row_sex == sex:
+                    assert (
+                        payload["forecast"][horizon]["projected_rank"] == expected[f"{name}|{sex}"]
+                    )

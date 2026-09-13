@@ -69,9 +69,9 @@ baby-names-app/
 - **Top Names** (`/explore`) — the most popular names for any year since 1880, filterable by
   sex, as a bar chart and table
 - **Name Search** (`/search`) — full popularity history for any name with current-rank stat
-  tiles, a 5-year forecast with bands labelled by the coverage they actually achieve, 5-year
-  holdout validation metrics (MAE/RMSE/MAPE), and a card describing the pooled model that
-  produced the line
+  tiles, a 5-year forecast with a projected rank and bands labelled by the coverage they actually
+  achieve, and a year-by-year track record putting what the model said about each recorded year —
+  its projected share and projected rank, at a horizon the reader chooses — beside what happened
 - **AI Chat** (`/chat`) — natural-language questions are translated to SQL by Groq, executed
   against a read-only connection with keyword guards and row caps, and phrased back as an
   answer; the generated SQL is shown with every response

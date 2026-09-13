@@ -47,12 +47,6 @@ export interface NameRow {
   popularity_rank: number
 }
 
-export interface ValidationPoint {
-  year: number
-  actual: number
-  predicted: number
-}
-
 export interface Validation {
   mae: number
   rmse: number
@@ -76,7 +70,6 @@ export interface Validation {
   // How many of those windows stand behind `skill`. A name recorded since
   // 1995 has all 26; a recent arrival has a handful.
   skill_windows?: number
-  points: ValidationPoint[]
 }
 
 export interface CalibrationLevel {
@@ -131,10 +124,22 @@ export interface Stratum {
 export interface ForecastPoint {
   year: number
   mean: number
+  // The rank this projection earned against the whole field observed at the
+  // origin — the eligible names at what the model said, everyone else held at
+  // their last observed share. Ranked in the batch, never at request time. See
+  // docs/adr/0013-projected-rank-against-a-frozen-field.md.
+  projected_rank: number
   lo80: number
   hi80: number
   lo95: number
   hi95: number
+}
+
+// What the model said about one year, predicted `horizon` years before it.
+export interface TrackRecordEntry {
+  year: number
+  projected_share: number
+  projected_rank: number
 }
 
 export interface ForecastPayload {
@@ -146,6 +151,12 @@ export interface ForecastPayload {
   model: Model | null
   calibration: Calibration | null
   stratum: Stratum | null
+  // Keyed by horizon as a string ("5"). For horizon h, year Y's entry is the
+  // prediction made at origin Y − h; horizons are never mixed within a series.
+  // A year the model was never checked on has no entry, and a name eligible at
+  // few origins has a short series. See
+  // docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
+  track_record: Record<string, TrackRecordEntry[]>
 }
 
 export interface ChatEntry {

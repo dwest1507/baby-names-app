@@ -30,6 +30,7 @@ dev/build dependency and never reaches the container. See
 docs/adr/0004-forecasts-as-a-build-artifact.md.
 """
 
+import bisect
 import heapq
 import os
 
@@ -336,6 +337,84 @@ def build_rows(series, origins) -> list[dict]:
     return rows
 
 
+def rank_against_field(projected, frozen) -> dict[str, int]:
+    """The rank each projected share earns among the whole field of names.
+
+    `projected` is what the model said about the names it could forecast;
+    `frozen` is every other name observed at the origin, held at the share it
+    was last observed at. A key in both is the model's — a name it forecast is
+    not also a name it froze.
+
+    Only `projected` gets a rank back: `frozen` is the field, not the subject.
+    Ties take the better rank, which is `method="min"` — how `build_db` builds
+    `popularity_rank` itself, and the two columns sit side by side.
+
+    Freezing is what keeps the figure honest. About four in five observed
+    name/sex pairs cannot be forecast at all (ADR 0001), so ranking against the
+    forecastable names alone lifts every name by one place for each
+    un-forecastable competitor above it — invisible in the top 100, where 99.8%
+    of pairs are eligible, and severe below it. See
+    docs/adr/0013-projected-rank-against-a-frozen-field.md.
+    """
+    field = sorted(
+        list(projected.values()) + [v for key, v in frozen.items() if key not in projected]
+    )
+    total = len(field)
+    # `total - bisect_right(value)` is how many shares beat this one outright,
+    # so a name is ranked one behind them however many others tie with it.
+    return {key: total - bisect.bisect_right(field, value) + 1 for key, value in projected.items()}
+
+
+def observed_field(series, origin: int) -> dict[str, float]:
+    """Every name recorded in `origin`, at the share it held there.
+
+    The field a projected rank is ranked against, before the forecastable
+    names are lifted out of it and replaced by their projections. A name not
+    recorded in the origin year is absent rather than carried forward from
+    whenever it was last seen: the rank it would be compared against is
+    computed among the names actually recorded in a year, so the projected
+    field is built the same way.
+    """
+    field = {}
+    for key, years, values, _ranks in series:
+        at = np.searchsorted(years, origin)
+        if at < len(years) and years[at] == origin:
+            field[key] = float(values[at])
+    return field
+
+
+def projected_ranks(rows, predicted: np.ndarray, field: dict[str, float]) -> np.ndarray:
+    """A rank for every `(row, horizon)`: `(len(rows), H)`, ranked within a sex.
+
+    One field per `(origin, horizon, sex)`, because a rank is only ever a
+    position among names of the same sex in the same year — `popularity_rank`
+    is computed per `(sex, year)` and this has to be comparable to it.
+
+    `rows` are the names eligible at this origin, so they enter at their
+    projected share; everyone else in `field` is frozen where they were.
+    """
+    ranks = np.zeros((len(rows), H), dtype=np.int64)
+    if not rows:
+        return ranks
+
+    by_sex: dict[str, list[int]] = {}
+    for i, row in enumerate(rows):
+        by_sex.setdefault(row["key"].rsplit("|", 1)[1], []).append(i)
+    frozen_by_sex: dict[str, dict[str, float]] = {sex: {} for sex in by_sex}
+    for key, share in field.items():
+        sex = key.rsplit("|", 1)[1]
+        if sex in frozen_by_sex:
+            frozen_by_sex[sex][key] = share
+
+    for sex, indices in by_sex.items():
+        for horizon in range(H):
+            projected = {rows[i]["key"]: float(predicted[i][horizon]) for i in indices}
+            ranked = rank_against_field(projected, frozen_by_sex[sex])
+            for i in indices:
+                ranks[i, horizon] = ranked[rows[i]["key"]]
+    return ranks
+
+
 def backtest_span(max_observed_year: int) -> range:
     """The origins whose five-year outcome the database can already check.
 
@@ -345,6 +424,20 @@ def backtest_span(max_observed_year: int) -> range:
     with nothing here changed, 1995 through 2021.
     """
     return range(FIRST_BACKTEST_ORIGIN, max_observed_year - H + 1)
+
+
+def track_record_origins(max_observed_year: int) -> range:
+    """The origins a track record is built from: the span, and those after it.
+
+    An origin after the span has not had its five-year window close, but its
+    shorter horizons have — on the 2025 database, 2024 can already be checked
+    one year ahead and 2021 four. Without them every horizon but the fifth
+    would stop short of the newest year. They are *fitted* origins, not
+    *scored* ones: skill, `BacktestTally` and `model_evaluation` are defined on
+    closed five-year windows, and those stay `backtest_span`'s alone. See
+    docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
+    """
+    return range(FIRST_BACKTEST_ORIGIN, max_observed_year)
 
 
 def training_origins(origin: int) -> range:

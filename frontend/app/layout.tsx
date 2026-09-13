@@ -33,7 +33,7 @@ export default function RootLayout({
       <body className="flex min-h-screen flex-col">
         <AmbientBackground />
         <Header />
-        <main className="relative z-10 flex-1">{children}</main>
+        <main className="relative z-10 flex flex-1 flex-col">{children}</main>
         <Footer />
       </body>
     </html>

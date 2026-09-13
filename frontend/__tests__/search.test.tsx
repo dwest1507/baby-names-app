@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { cloneElement, type ReactElement } from 'react'
 import userEvent from '@testing-library/user-event'
 import type { NameRow } from '@/lib/api'
 import { CHART_COLORS } from '@/components/charts/chartTheme'
-import { formatPercent } from '@/lib/format'
+import { formatPercent, formatRank } from '@/lib/format'
 
 const getMeta = vi.fn()
 const getNameHistory = vi.fn()
@@ -60,6 +60,7 @@ function emptyForecast(name: string, history: NameRow[]) {
     model: null,
     calibration: null,
     stratum: null,
+    track_record: {},
   }
 }
 
@@ -80,8 +81,8 @@ const MODEL_CARD = {
 }
 
 /** A forecast with validation, the model card and measured calibration —
- * everything the "Holdout validation" panel and the chart's interval labels
- * read from. */
+ * everything the statistics disclosure and the chart's interval labels read
+ * from. */
 function fullForecast(
   name: string,
   history: NameRow[],
@@ -92,6 +93,10 @@ function fullForecast(
     tier?: string
     volatilityBin?: number
     stratum?: { tier: string; volatility_bin: number } | null
+    trackRecord?: Record<
+      string,
+      { year: number; projected_share: number; projected_rank: number }[]
+    >
   } = {}
 ) {
   const {
@@ -101,14 +106,35 @@ function fullForecast(
     tier = 'top100',
     volatilityBin = 1,
     stratum = { tier, volatility_bin: volatilityBin },
+    // What the fit h years earlier said about each year from 1995 + h on: 2h%
+    // high in odd years and h% low in even ones, so one year ahead it misses
+    // by +2% / −1% and five years ahead by +10% / −5%.
+    trackRecord = Object.fromEntries(
+      [1, 2, 3, 4, 5].map((h) => [
+        String(h),
+        history
+          .filter((row) => row.year >= 1995 + h)
+          .map((row) => ({
+            year: row.year,
+            projected_share: row.popularity_percent * (row.year % 2 ? 1 + 0.02 * h : 1 - 0.01 * h),
+            // Missed by exactly the horizon, so a rank read off the page says
+            // which horizon produced it.
+            projected_rank: row.popularity_rank + h,
+          })),
+      ])
+    ),
   } = overrides
   return {
     name,
     sex: 'F' as const,
     history: history.map((row) => ({ year: row.year, value: row.popularity_percent })),
-    forecast: [2026, 2027, 2028, 2029, 2030].map((year) => ({
+    forecast: [2026, 2027, 2028, 2029, 2030].map((year, i) => ({
       year,
       mean: 0.002,
+      // Ranked in the batch against the whole field observed at the origin,
+      // so the page only prints it. See
+      // docs/adr/0013-projected-rank-against-a-frozen-field.md.
+      projected_rank: 12 + i,
       lo80: 0.0015,
       hi80: 0.0025,
       lo95: 0.001,
@@ -120,11 +146,6 @@ function fullForecast(
       mape: 12.3,
       skill,
       skill_windows: 26,
-      points: [2021, 2022, 2023, 2024, 2025].map((year, i) => ({
-        year,
-        actual: 0.002 + i * 0.0001,
-        predicted: 0.0021 + i * 0.0001,
-      })),
     },
     model: MODEL_CARD,
     // Coverage is measured per stratum, so the row a name carries is the one
@@ -150,6 +171,7 @@ function fullForecast(
     // describes: a name whose cell was too thin to earn a band is served the
     // population's. See docs/adr/0011-conformal-bands-keyed-by-strata.md.
     stratum,
+    track_record: trackRecord,
   }
 }
 
@@ -288,84 +310,348 @@ describe('SearchPage trend chart once the forecast has loaded', () => {
   })
 })
 
-describe('SearchPage validation panel', () => {
+describe('SearchPage statistics disclosure', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     getMeta.mockResolvedValue({ min_year: 1960, max_year: NEWEST_YEAR })
   })
 
-  it('shows validation figures in readable units rather than scientific notation', async () => {
-    const years = Array.from({ length: 15 }, (_, i) => 2010 + i)
+  async function searchEmma(overrides: Parameters<typeof fullForecast>[2] = {}) {
+    const years = Array.from({ length: 40 }, (_, i) => 1986 + i) // ends 2025
     const history = historyFor('Emma', years)
     getNameHistory.mockResolvedValue({ name: 'Emma', sex: 'F', history })
-    getNameForecast.mockResolvedValue(fullForecast('Emma', history))
-
+    getNameForecast.mockResolvedValue(fullForecast('Emma', history, overrides))
     await search('Emma')
+    await screen.findByRole('table', { name: /forecast/i })
+  }
 
-    const heading = await screen.findByText('Holdout validation')
-    const card = heading.parentElement as HTMLElement
-    expect(card).toBeTruthy()
-    expect(card.textContent).not.toMatch(/e[+-]\d/i)
+  const disclosure = () => screen.getByRole('button', { name: /statistics/i })
+
+  it('keeps the technical figures behind a disclosure, collapsed by default', async () => {
+    // A novice gets a readable page; an expert is one click from everything.
+    await searchEmma()
+
+    expect(disclosure()).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('heading', { name: 'How the forecast is made' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'What drives this forecast' })).toBeNull()
   })
 
-  it("reports the model's skill against the naive no-change baseline", async () => {
-    const years = Array.from({ length: 15 }, (_, i) => 2010 + i)
-    const history = historyFor('Emma', years)
-    getNameHistory.mockResolvedValue({ name: 'Emma', sex: 'F', history })
-    getNameForecast.mockResolvedValue(fullForecast('Emma', history, { skill: 0.25 }))
+  it('opens from the keyboard onto every technical figure, announcing that it is open', async () => {
+    // Nothing is deleted: the holdout's error figures, the per-name attributes
+    // and the model card are all still one keypress away.
+    await searchEmma({ skill: 0.25 })
+    const user = userEvent.setup()
 
-    await search('Emma')
+    disclosure().focus()
+    await user.keyboard('{Enter}')
 
-    // Scoped to the validation panel: the chart legend now carries the same
-    // comparison, in the shorter form the line is labelled with.
-    const panel = (await screen.findByText('Holdout validation')).closest('div')!
-    expect(within(panel).getByText(/no change/i)).toHaveTextContent('25.0%')
+    expect(disclosure()).toHaveAttribute('aria-expanded', 'true')
+    const region = document.getElementById(disclosure().getAttribute('aria-controls')!)!
+    expect(region).toBeVisible()
+    for (const heading of ['What drives this forecast', 'How the forecast is made']) {
+      expect(within(region).getByRole('heading', { name: heading })).toBeInTheDocument()
+    }
+    for (const figure of [/MAE/, /RMSE/, /MAPE/, /12\.3%/, /25\.0%/, /Top 100/, /3\.0×/]) {
+      expect(region.textContent).toMatch(figure)
+    }
+    expect(within(region).getByText(MODEL_CARD.model_name)).toBeInTheDocument()
+    expect(region.textContent).not.toMatch(/\de[-+]?\d/i)
+
+    await user.keyboard(' ')
+    expect(disclosure()).toHaveAttribute('aria-expanded', 'false')
   })
 
-  it('flags a forecast that performs worse than the naive baseline', async () => {
-    const years = Array.from({ length: 15 }, (_, i) => 2010 + i)
-    const history = historyFor('Emma', years)
-    getNameHistory.mockResolvedValue({ name: 'Emma', sex: 'F', history })
-    getNameForecast.mockResolvedValue(fullForecast('Emma', history, { skill: -0.1 }))
+  it('warns in plain sight when the forecast does worse than assuming no change', async () => {
+    // The one thing a visitor most needs to hear is not a technical detail: a
+    // friendlier page must not be a quieter one. See
+    // docs/adr/0005-truthful-confidence-intervals.md.
+    await searchEmma({ skill: -0.1 })
 
-    await search('Emma')
+    const warning = screen.getByText(/worse than.*no change/i)
+    expect(disclosure()).toHaveAttribute('aria-expanded', 'false')
+    expect(warning).toBeVisible()
+    expect(warning).toHaveTextContent('10.0%')
+    const region = document.getElementById(disclosure().getAttribute('aria-controls')!)!
+    expect(region.contains(warning)).toBe(false)
+  })
 
-    const panel = (await screen.findByText('Holdout validation')).closest('div')!
-    expect(within(panel).getByText(/worse than.*no change/i)).toHaveTextContent('10.0%')
+  it('says what the model predicted for a recorded year in one place only', async () => {
+    // The holdout's own predicted-against-actual table answered "what did the
+    // model say about 2023" from a different origin than the track record
+    // does. Only the year-by-year table answers it now, even fully expanded.
+    // See docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
+    await searchEmma()
+    await userEvent.click(disclosure())
+
+    const tables = screen.getAllByRole('table')
+    expect(tables.map((table) => table.getAttribute('aria-label') ?? table.textContent)).toEqual([
+      expect.stringMatching(/^Forecast for Emma/),
+      expect.stringMatching(/year-by-year/i),
+    ])
+    expect(screen.queryByText(/holdout validation/i)).toBeNull()
+    expect(screen.queryByRole('columnheader', { name: /predicted|actual/i })).toBeNull()
   })
 })
 
-describe('SearchPage holdout validation table', () => {
+describe('SearchPage track record', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     getMeta.mockResolvedValue({ min_year: 1960, max_year: NEWEST_YEAR })
   })
 
-  it('shows what was predicted against what happened, year by year', async () => {
-    // Three summary error figures are a claim; the window itself is the
-    // evidence for it. Origin 2020, so the rows are the five observed years
-    // 2021-2025 the model did not see.
-    const years = Array.from({ length: 40 }, (_, i) => 1986 + i)
+  async function searchEmma(overrides: Parameters<typeof fullForecast>[2] = {}) {
+    const years = Array.from({ length: 40 }, (_, i) => 1986 + i) // ends 2025
     const history = historyFor('Emma', years)
     getNameHistory.mockResolvedValue({ name: 'Emma', sex: 'F', history })
-    const payload = fullForecast('Emma', history)
-    getNameForecast.mockResolvedValue(payload)
-
+    getNameForecast.mockResolvedValue(fullForecast('Emma', history, overrides))
     await search('Emma')
+    const table = await screen.findByRole('table', { name: /year-by-year/i })
+    await within(table).findByRole('columnheader', { name: /error/i })
+    return { history, table }
+  }
 
-    // The window is 2021-2025, forecast from origin 2020 — say so, rather
-    // than leaving "the 5 most recent years" to be counted off the rows.
-    const panel = (await screen.findByText('Holdout validation')).closest('div')!
-    expect(panel.textContent).toContain('2021')
-    expect(panel.textContent).toContain('2025')
-    expect(panel.textContent).toContain('2020')
+  function rowFor(table: HTMLElement, year: number): HTMLElement {
+    return within(table).getByText(String(year)).closest('tr')!
+  }
 
-    const table = await screen.findByRole('table', { name: /holdout/i })
-    for (const point of payload.validation.points) {
-      const row = within(table).getByText(String(point.year)).closest('tr')!
-      expect(row.textContent).toContain(formatPercent(point.actual, 4))
-      expect(row.textContent).toContain(formatPercent(point.predicted, 4))
+  /** The error column as numbers, for every row that has one. */
+  function visibleErrors(table: HTMLElement): number[] {
+    return within(table)
+      .getAllByRole('row')
+      .slice(1)
+      .map((row) => within(row).getAllByRole('cell').slice(-1)[0].textContent ?? '')
+      .filter((text) => text !== '')
+      .map((text) => Number(text.replaceAll('\u2212', '-').replaceAll('%', '')))
+  }
+
+  /** The middle of a list, or the midpoint of the middle two. */
+  function median(values: number[]): number {
+    const sorted = [...values].sort((a, b) => a - b)
+    const middle = Math.floor(sorted.length / 2)
+    return sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
+  }
+
+  it('opens on what the model said one year ahead', async () => {
+    // One year out is the question most visitors are asking, and the one a
+    // reader can interpret first. See
+    // docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
+    const { table } = await searchEmma()
+
+    const selector = screen.getByRole('radiogroup', { name: /years ahead/i })
+    expect(within(selector).getByRole('radio', { name: '1 year' })).toBeChecked()
+    expect(rowFor(table, 2011)).toHaveTextContent('+2.0%')
+  })
+
+  it('shows, for each year the model can be checked on, what it said and how wrong it was', async () => {
+    // Error is relative to what happened, so a miss on a common name and a
+    // miss on a rare one read on the same scale: (model − actual) / actual.
+    const { history, table } = await searchEmma()
+
+    const odd = history.find((row) => row.year === 2011)!
+    expect(rowFor(table, 2011)).toHaveTextContent(formatPercent(odd.popularity_percent * 1.02, 4))
+    expect(rowFor(table, 2011)).toHaveTextContent('+2.0%')
+
+    const even = history.find((row) => row.year === 2012)!
+    expect(rowFor(table, 2012)).toHaveTextContent(formatPercent(even.popularity_percent * 0.99, 4))
+    expect(rowFor(table, 2012)).toHaveTextContent('\u22121.0%')
+  })
+
+  it('colours each error by the direction it missed in, and defines the column', async () => {
+    // "−1.0%" beside a share column that is also a percentage is ambiguous
+    // without saying what it is a percentage of.
+    const { table } = await searchEmma()
+
+    const high = within(rowFor(table, 2011)).getByText('+2.0%')
+    const alsoHigh = within(rowFor(table, 2013)).getByText('+2.0%')
+    const low = within(rowFor(table, 2012)).getByText('\u22121.0%')
+    expect(high.className).toBe(alsoHigh.className)
+    expect(low.className).not.toBe(high.className)
+
+    expect(screen.getByText(/as a share of what actually happened/i)).toBeInTheDocument()
+  })
+
+  it('prints the projected rank next to the rank the year actually recorded', async () => {
+    // Adjacent columns, because that is the comparison a reader is making:
+    // "it said 47th, it was 46th". Which is also why the rank the model is
+    // credited with has to be ranked against the whole field rather than
+    // against the forecastable names — a systematic gap between two adjacent
+    // columns reads as the model being wrong, not as a ranking artifact. See
+    // docs/adr/0013-projected-rank-against-a-frozen-field.md.
+    const { history, table } = await searchEmma()
+
+    const headers = within(table)
+      .getAllByRole('columnheader')
+      .map((header) => header.textContent)
+    expect(headers.indexOf('Projected rank')).toBe(headers.indexOf('Rank') + 1)
+
+    const row = history.find((entry) => entry.year === 2011)!
+    const [rank, projectedRank] = within(rowFor(table, 2011)).getAllByRole('cell').slice(3, 5)
+    expect(rank).toHaveTextContent(formatRank(row.popularity_rank))
+    expect(projectedRank).toHaveTextContent(formatRank(row.popularity_rank + 1))
+  })
+
+  it('moves the projected rank with the horizon selector', async () => {
+    // The fixture misses the rank by exactly the horizon, so the column says
+    // which horizon produced it.
+    const { history, table } = await searchEmma()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('radio', { name: '5 years' }))
+
+    const row = history.find((entry) => entry.year === 2011)!
+    const projectedRank = within(rowFor(table, 2011)).getAllByRole('cell')[4]
+    expect(projectedRank).toHaveTextContent(formatRank(row.popularity_rank + 5))
+  })
+
+  it('leaves a year the model was never checked on blank rather than zero', async () => {
+    // "Not measured" and "measured as nothing" are different facts. 1995 is
+    // before the first origin could be scored; 2005 is a gap inside the record,
+    // an origin at which this name was not eligible.
+    const years = Array.from({ length: 40 }, (_, i) => 1986 + i)
+    const record = historyFor('Emma', years)
+      .filter((row) => row.year >= 2000 && row.year !== 2005)
+      .map((row) => ({
+        year: row.year,
+        projected_share: row.popularity_percent,
+        projected_rank: row.popularity_rank,
+      }))
+    const { table } = await searchEmma({ trackRecord: { '1': record } })
+
+    for (const year of [1995, 2005]) {
+      const cells = within(rowFor(table, year)).getAllByRole('cell')
+      const [projectedRank, projected, error] = cells.slice(-3)
+      expect(projectedRank).toHaveTextContent(/^$/)
+      expect(projected).toHaveTextContent(/^$/)
+      expect(error).toHaveTextContent(/^$/)
     }
+    const checked = within(rowFor(table, 2006)).getAllByRole('cell').slice(-1)[0]
+    expect(checked).toHaveTextContent('+0.0%')
+  })
+
+  it('summarises accuracy with figures a reader can check against the error column', async () => {
+    // Derived from the rows on screen, never stored, so working the column out
+    // by hand gives exactly what the summary says. One year ahead, 30 years
+    // from 1996: 15 odd years 2% high and 15 even years 1% low, so the typical
+    // miss is 1.5% and on average it ran 0.5% high.
+    const { table } = await searchEmma()
+
+    const errors = visibleErrors(table)
+    expect(errors).toHaveLength(30)
+    const typicalMiss = median(errors.map(Math.abs))
+    const meanError = errors.reduce((sum, e) => sum + e, 0) / errors.length
+
+    const summary = screen.getByRole('group', { name: /accuracy/i })
+    expect(summary).toHaveTextContent('30 years')
+    expect(within(summary).getByText(`${typicalMiss.toFixed(1)}%`)).toBeInTheDocument()
+    expect(within(summary).getByText(`+${meanError.toFixed(1)}%`)).toBeInTheDocument()
+  })
+
+  it('reports the typical miss as the middle of the column, so one wild year does not stand for the rest', async () => {
+    // A rare name's record can hold a year the model missed several times over;
+    // averaged in, it would make every other year read as badly missed too.
+    const years = Array.from({ length: 40 }, (_, i) => 1986 + i)
+    const record = historyFor('Emma', years)
+      .filter((row) => row.year >= 2016)
+      .map((row) => ({
+        year: row.year,
+        projected_share: row.popularity_percent * (row.year === 2020 ? 4 : 1.01),
+        projected_rank: row.popularity_rank,
+      }))
+    await searchEmma({ trackRecord: { '1': record } })
+
+    const summary = screen.getByRole('group', { name: /accuracy/i })
+    expect(summary).toHaveTextContent('10 years')
+    expect(within(summary).getByText('1.0%')).toBeInTheDocument()
+    expect(within(summary).getByText('+30.9%')).toBeInTheDocument()
+  })
+
+  it('moves the projected share, the error column and the summary together when the horizon changes', async () => {
+    const { history, table } = await searchEmma()
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('radio', { name: '5 years' }))
+
+    const odd = history.find((row) => row.year === 2011)!
+    expect(rowFor(table, 2011)).toHaveTextContent(formatPercent(odd.popularity_percent * 1.1, 4))
+    expect(rowFor(table, 2011)).toHaveTextContent('+10.0%')
+    // Checked one year ahead, but nothing was predicted five years before 1998.
+    const [projected, error] = within(rowFor(table, 1998)).getAllByRole('cell').slice(-2)
+    expect(projected).toHaveTextContent(/^$/)
+    expect(error).toHaveTextContent(/^$/)
+    expect(screen.getByRole('group', { name: /5 years ahead/i })).toHaveTextContent('26 years')
+    expect(screen.getByText(/for each year 5 years before it/i)).toBeInTheDocument()
+  })
+
+  it('summarises exactly the visible error column at every horizon', async () => {
+    const { table } = await searchEmma()
+    const user = userEvent.setup()
+
+    for (const h of [1, 2, 3, 4, 5]) {
+      await user.click(screen.getByRole('radio', { name: h === 1 ? '1 year' : `${h} years` }))
+
+      const errors = visibleErrors(table)
+      expect(errors).toHaveLength(31 - h)
+      const typicalMiss = median(errors.map(Math.abs))
+      const meanError = errors.reduce((sum, e) => sum + e, 0) / errors.length
+
+      const summary = screen.getByRole('group', { name: /accuracy/i })
+      expect(summary).toHaveTextContent(`${errors.length} years`)
+      expect(within(summary).getByText(`${typicalMiss.toFixed(1)}%`)).toBeInTheDocument()
+      expect(within(summary).getByText(`+${meanError.toFixed(1)}%`)).toBeInTheDocument()
+    }
+  })
+
+  it('lets the horizon be chosen from the keyboard', async () => {
+    await searchEmma()
+    const user = userEvent.setup()
+
+    screen.getByRole('radio', { name: '1 year' }).focus()
+    await user.keyboard('{ArrowRight}')
+
+    expect(screen.getByRole('radio', { name: '2 years' })).toBeChecked()
+    expect(screen.getByRole('group', { name: /2 years ahead/i })).toBeInTheDocument()
+  })
+
+  it('opens every new search on one year ahead, whatever the last was left on', async () => {
+    // One year is the slice a reader can interpret first (ADR 0012); a name
+    // looked up next should not inherit a five-year view chosen for another.
+    await searchEmma()
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('radio', { name: '5 years' }))
+
+    await user.clear(screen.getByLabelText('Name'))
+    await user.type(screen.getByLabelText('Name'), 'Emma')
+    await user.click(screen.getByRole('button', { name: 'Search' }))
+
+    await waitFor(() => expect(screen.getByRole('radio', { name: '1 year' })).toBeChecked())
+  })
+
+  it('shows a short record as short, and says so when a horizon was never checked', async () => {
+    // First eligible at origin 2021, after the scored span: it can be checked
+    // one to four years ahead, and never five. No row is made up to fill that.
+    const years = Array.from({ length: 40 }, (_, i) => 1986 + i)
+    const record = Object.fromEntries(
+      [1, 2, 3, 4].map((h) => [
+        String(h),
+        historyFor('Emma', years)
+          .filter((row) => row.year >= 2021 + h)
+          .map((row) => ({
+            year: row.year,
+            projected_share: row.popularity_percent,
+            projected_rank: row.popularity_rank,
+          })),
+      ])
+    )
+    const { table } = await searchEmma({ trackRecord: record })
+    const user = userEvent.setup()
+
+    expect(visibleErrors(table)).toHaveLength(4)
+
+    await user.click(screen.getByRole('radio', { name: '5 years' }))
+
+    expect(visibleErrors(table)).toHaveLength(0)
+    expect(screen.queryByRole('group', { name: /accuracy/i })).not.toBeInTheDocument()
+    expect(screen.getByText(/not yet been checked 5 years ahead/i)).toBeInTheDocument()
   })
 })
 
@@ -452,7 +738,7 @@ describe('SearchPage forecast presentation', () => {
     // history it continues, and the band is more present than it is.
     await searchEmma()
 
-    const forecast = curve('.recharts-line-curve[name^="Pooled forecast"]')
+    const forecast = curve('.recharts-line-curve[name="Forecast"]')
     const history = curve('.recharts-line-curve[name="Historical"]')
     const bands = [...document.querySelectorAll('.recharts-area-area')] as SVGElement[]
 
@@ -465,24 +751,221 @@ describe('SearchPage forecast presentation', () => {
     expect(inner).toBeGreaterThanOrEqual(0.25)
   })
 
-  it("labels the forecast line with this name's measured skill", async () => {
-    // The legend is where a visitor reads what the dashed line is. Naming the
-    // model without saying how well it has done on *this* name invites the
-    // line to be trusted uniformly, which is exactly what the measurements
-    // say it should not be.
-    await searchEmma({ skill: 0.25 })
+  it('paints the bands beneath the lines, whatever order the legend reads in', async () => {
+    // SVG has no z-index: whatever is painted later covers what came before.
+    await searchEmma()
 
-    const label = curve('.recharts-line-curve[name^="Pooled forecast"]').getAttribute('name')!
-    expect(label).toMatch(/25%/)
-    expect(screen.getByText(label)).toBeInTheDocument()
+    const bands = [...document.querySelectorAll('.recharts-area-area')]
+    const lines = [...document.querySelectorAll('.recharts-line-curve')]
+    expect(bands).toHaveLength(2)
+    for (const band of bands) {
+      for (const line of lines) {
+        expect(band.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      }
+    }
   })
 
-  it('says plainly on the line when the model loses to no-change on this name', async () => {
+  it('names the forecast line in the legend without grading it', async () => {
+    // The legend names things; how well the model has done on this name is
+    // reported on the page, where a losing skill is still stated plainly.
     await searchEmma({ skill: -0.1 })
 
-    const label = curve('.recharts-line-curve[name^="Pooled forecast"]').getAttribute('name')!
-    expect(label).toMatch(/worse than no change/i)
-    expect(screen.getByText(label)).toBeInTheDocument()
+    expect(legendLabels()).toContain('Forecast')
+    const legend = document.querySelector('.recharts-legend-wrapper')!
+    expect(legend.textContent).not.toMatch(/no change|better|worse|skill/i)
+  })
+
+  const legendLabels = () =>
+    [...document.querySelectorAll('.recharts-legend-item-text')].map((item) => item.textContent)
+
+  it('reads the legend in the order the chart is understood', async () => {
+    // History, then the line that continues it, then the likelier interval
+    // before the wider one — whatever order the series are painted in.
+    await searchEmma({ empirical80: 0.44, empirical95: 0.51 })
+
+    expect(legendLabels()).toEqual(['Historical', 'Forecast', '44% interval', '51% interval'])
+  })
+
+  /** How opaque an element's fill renders: its colour's alpha times fill-opacity. */
+  function fillAlpha(element: Element): number {
+    const fill = element.getAttribute('fill') ?? ''
+    const rgba = fill.match(/rgba\([^)]*,\s*([\d.]+)\)/)
+    const colourAlpha = rgba ? Number(rgba[1]) : 1
+    const opacity = element.getAttribute('fill-opacity')
+    return colourAlpha * (opacity === null ? 1 : Number(opacity))
+  }
+
+  it("gives each interval's swatch the opacity its band actually renders at", async () => {
+    // The inner band is painted over the outer one, so where it sits the two
+    // composite: what a visitor sees there is not the inner band's own alpha.
+    await searchEmma({ empirical80: 0.44, empirical95: 0.51 })
+
+    const outerBand = fillAlpha(curve('.recharts-area-area[name="51% interval"]'))
+    const innerBand = fillAlpha(curve('.recharts-area-area[name="44% interval"]'))
+    const rendered = { outer: outerBand, inner: 1 - (1 - outerBand) * (1 - innerBand) }
+
+    const swatch = (label: string) =>
+      fillAlpha(
+        screen.getByLabelText(`${label} legend icon`).querySelector('.recharts-legend-icon')!
+      )
+    expect(swatch('51% interval')).toBeCloseTo(rendered.outer, 3)
+    expect(swatch('44% interval')).toBeCloseTo(rendered.inner, 3)
+  })
+
+  /**
+   * Hover the plot above a year and return the tooltip it opens. The chart is
+   * 800 wide; the y-axis takes the first 72px and the right margin the last
+   * 16, so years spread evenly across the rest.
+   */
+  async function hoverYear(year: number, [first, last]: [number, number]) {
+    const plotLeft = 72
+    const plotRight = 784
+    const x = plotLeft + ((year - first) / (last - first)) * (plotRight - plotLeft)
+    fireEvent.mouseMove(document.querySelector('.recharts-wrapper')!, { clientX: x, clientY: 200 })
+    return waitFor(() => {
+      const tooltip = document.querySelector('.recharts-tooltip-wrapper')
+      if (!tooltip?.textContent?.includes(String(year))) throw new Error(`no tooltip for ${year}`)
+      return tooltip as HTMLElement
+    })
+  }
+
+  it('states the projected value and both ranges when a forecast year is hovered', async () => {
+    // The band carries the uncertainty, and a shaded region is unreadable to
+    // anyone who cannot interpret one: hovering says it in numbers.
+    await searchEmma()
+
+    const tooltip = await hoverYear(2028, [1986, 2030])
+
+    expect(tooltip).toHaveTextContent('0.2000%')
+    expect(tooltip).toHaveTextContent('0.1500% – 0.2500%')
+    expect(tooltip).toHaveTextContent('0.1000% – 0.3000%')
+  })
+
+  it("names each range by the coverage measured for this name's stratum", async () => {
+    // Without its measured coverage the two ranges differ only by width, and
+    // the reader supplies a confidence level of their own. See
+    // docs/adr/0011-conformal-bands-keyed-by-strata.md.
+    await searchEmma({ empirical80: 0.79, empirical95: 0.94 })
+
+    const tooltip = await hoverYear(2028, [1986, 2030])
+
+    expect(tooltip).toHaveTextContent('79% interval: 0.1500% – 0.2500%')
+    expect(tooltip).toHaveTextContent('94% interval: 0.1000% – 0.3000%')
+    expect(tooltip).not.toHaveTextContent(/80%|95%/)
+  })
+
+  it('makes no accuracy claim when a forecast year is hovered', async () => {
+    // Skill is reported on the page; the tooltip identifies, it does not grade.
+    await searchEmma({ skill: -0.1 })
+
+    const tooltip = await hoverYear(2028, [1986, 2030])
+
+    expect(tooltip).not.toHaveTextContent(/no change|better|worse|skill|accura/i)
+  })
+
+  it('states the recorded value when a recorded year is hovered', async () => {
+    const history = await searchEmma()
+
+    const tooltip = await hoverYear(2000, [1986, 2030])
+
+    const recorded = history.find((row) => row.year === 2000)!.popularity_percent
+    expect(tooltip).toHaveTextContent(formatPercent(recorded, 4))
+  })
+
+  it('reports the last recorded year as recorded, not as the start of the forecast', async () => {
+    // The forecast line is drawn back to the last observed point so the two
+    // lines meet; that join is not a projection of a year already recorded.
+    const history = await searchEmma()
+
+    const tooltip = await hoverYear(2025, [1986, 2030])
+
+    expect(tooltip).toHaveTextContent(formatPercent(history.at(-1)!.popularity_percent, 4))
+    expect(tooltip).not.toHaveTextContent(/forecast|interval/i)
+  })
+
+  it('writes a rare name’s share in fixed decimals, never scientific notation', async () => {
+    const years = Array.from({ length: 40 }, (_, i) => 1986 + i)
+    const history = historyFor('Emma', years).map((row) => ({ ...row, popularity_percent: 3e-8 }))
+    getNameHistory.mockResolvedValue({ name: 'Emma', sex: 'F', history })
+    getNameForecast.mockResolvedValue(fullForecast('Emma', history))
+    await search('Emma')
+    await screen.findByLabelText(/trend and forecast for Emma/i)
+
+    const tooltip = await hoverYear(2000, [1986, 2030])
+
+    expect(tooltip).toHaveTextContent('0.0000%')
+    expect(tooltip.textContent).not.toMatch(/\de[-+]?\d/i)
+  })
+
+  /** Years printed along the horizontal axis. */
+  function xAxisYears(): number[] {
+    return [
+      ...document.querySelectorAll(
+        '.recharts-xAxis-tick-labels .recharts-cartesian-axis-tick-value'
+      ),
+    ].map((tick) => Number(tick.textContent))
+  }
+
+  /** Press on one year, move to another and release, as a visitor dragging across the plot. */
+  async function dragAcross(from: number, to: number, range: [number, number]) {
+    const plot = document.querySelector('.recharts-wrapper')!
+    await hoverYear(from, range)
+    fireEvent.mouseDown(plot)
+    await hoverYear(to, range)
+    fireEvent.mouseUp(plot)
+  }
+
+  it('offers no reset control until the chart is zoomed', async () => {
+    await searchEmma()
+
+    expect(screen.queryByRole('button', { name: /reset zoom/i })).not.toBeInTheDocument()
+  })
+
+  it('zooms to the years dragged across, and resets to the full range', async () => {
+    // 145 years in 440 pixels leave the recent decades a few pixels wide.
+    await searchEmma()
+
+    await dragAcross(2000, 2010, [1986, 2030])
+
+    await waitFor(() => {
+      const years = xAxisYears()
+      expect(years.length).toBeGreaterThan(0)
+      expect(Math.min(...years)).toBeGreaterThanOrEqual(2000)
+      expect(Math.max(...years)).toBeLessThanOrEqual(2010)
+    })
+
+    await userEvent.click(screen.getByRole('button', { name: /reset zoom/i }))
+
+    await waitFor(() => expect(Math.min(...xAxisYears())).toBeLessThan(2000))
+    expect(screen.queryByRole('button', { name: /reset zoom/i })).not.toBeInTheDocument()
+  })
+
+  it('zooms in when the wheel turns over the plot', async () => {
+    await searchEmma()
+
+    await hoverYear(2020, [1986, 2030])
+    fireEvent.wheel(screen.getByLabelText(/trend and forecast for Emma/i), { deltaY: -100 })
+
+    await waitFor(() => expect(Math.min(...xAxisYears())).toBeGreaterThan(1986))
+    expect(screen.getByRole('button', { name: /reset zoom/i })).toBeInTheDocument()
+  })
+
+  it('labels a zoomed vertical axis finely enough to tell its ticks apart', async () => {
+    // Zoomed into a decade the shares differ in the third decimal place; at
+    // two decimals every tick would read the same.
+    await searchEmma()
+
+    await dragAcross(2000, 2003, [1986, 2030])
+
+    await waitFor(() => {
+      const labels = [
+        ...document.querySelectorAll(
+          '.recharts-yAxis-tick-labels .recharts-cartesian-axis-tick-value'
+        ),
+      ].map((tick) => tick.textContent)
+      expect(labels.length).toBeGreaterThan(1)
+      expect(new Set(labels).size).toBe(labels.length)
+    })
   })
 
   it('draws no point markers on the forecast line', async () => {
@@ -493,6 +976,96 @@ describe('SearchPage forecast presentation', () => {
 
     const dots = [...document.querySelectorAll('.recharts-dot')]
     expect(dots.filter((dot) => dot.getAttribute('fill') === CHART_COLORS.forecast)).toHaveLength(0)
+  })
+})
+
+describe('SearchPage forecast table', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    getMeta.mockResolvedValue({ min_year: 1960, max_year: NEWEST_YEAR })
+  })
+
+  async function searchEmma(overrides: Parameters<typeof fullForecast>[2] = {}) {
+    const years = Array.from({ length: 40 }, (_, i) => 1986 + i) // ends 2025
+    const history = historyFor('Emma', years)
+    getNameHistory.mockResolvedValue({ name: 'Emma', sex: 'F', history })
+    const payload = fullForecast('Emma', history, overrides)
+    getNameForecast.mockResolvedValue(payload)
+    await search('Emma')
+    return payload
+  }
+
+  it('lists each forecast year with its projected share and likely range', async () => {
+    // The chart made legible to someone who cannot read a shaded region: the
+    // range is the narrower band, because one range per row is all a reader
+    // needs and the wider one is what the chart is for.
+    const payload = await searchEmma()
+
+    const table = await screen.findByRole('table', { name: /forecast/i })
+    const rows = within(table).getAllByRole('row').slice(1) // header row first
+    expect(rows).toHaveLength(payload.forecast.length)
+    payload.forecast.forEach((point, i) => {
+      expect(rows[i]).toHaveTextContent(String(point.year))
+      expect(rows[i]).toHaveTextContent(formatPercent(point.mean, 4))
+      expect(rows[i]).toHaveTextContent(formatPercent(point.lo80, 4))
+      expect(rows[i]).toHaveTextContent(formatPercent(point.hi80, 4))
+      expect(rows[i]).not.toHaveTextContent(formatPercent(point.lo95, 4))
+    })
+  })
+
+  it('answers "will it still be in the top ten?" with a projected rank per year', async () => {
+    // The question a parent actually has. The model predicts a share of
+    // births, so the rank beside it is computed in the batch against the whole
+    // field observed at the origin — the page only prints what it was given.
+    // See docs/adr/0013-projected-rank-against-a-frozen-field.md.
+    const payload = await searchEmma()
+
+    const table = await screen.findByRole('table', { name: /forecast/i })
+    expect(within(table).getByRole('columnheader', { name: /projected rank/i })).toBeInTheDocument()
+    const rows = within(table).getAllByRole('row').slice(1)
+    payload.forecast.forEach((point, i) => {
+      expect(rows[i]).toHaveTextContent(String(point.projected_rank))
+    })
+  })
+
+  it('heads the range with the coverage measured for this name, never the nominal level', async () => {
+    // A name whose own cell was too thin is served the population's band, and
+    // its calibration row names `*`. The heading follows the row it was
+    // handed, whichever stratum that row describes. See
+    // docs/adr/0011-conformal-bands-keyed-by-strata.md.
+    await searchEmma({
+      stratum: { tier: 'top1000', volatility_bin: 2 },
+      tier: '*',
+      volatilityBin: -1,
+      empirical80: 0.776,
+    })
+
+    const table = await screen.findByRole('table', { name: /forecast/i })
+    const heading = within(table).getByRole('columnheader', { name: /likely range/i })
+    expect(heading).toHaveTextContent('78%')
+    expect(heading).not.toHaveTextContent('80%')
+  })
+
+  it('renders no forecast table for a name with no forecast', async () => {
+    const years = Array.from({ length: 34 }, (_, i) => 1960 + i) // ends 1993
+    const history = historyFor('Debra', years)
+    getNameHistory.mockResolvedValue({ name: 'Debra', sex: 'F', history })
+    getNameForecast.mockResolvedValue(emptyForecast('Debra', history))
+
+    await search('Debra')
+
+    await screen.findByText(/not in current use/i)
+    expect(screen.getByRole('table', { name: /year-by-year/i })).toBeInTheDocument()
+    expect(screen.queryByRole('table', { name: /forecast/i })).toBeNull()
+  })
+
+  it('scrolls within its own container rather than widening the page', async () => {
+    // jsdom lays nothing out, so the observable part of "readable on a narrow
+    // screen" is that the table sits in a box that scrolls horizontally.
+    await searchEmma()
+
+    const table = await screen.findByRole('table', { name: /forecast/i })
+    expect(table.parentElement).toHaveClass('overflow-x-auto')
   })
 })
 
@@ -520,7 +1093,10 @@ describe('SearchPage per-name forecast attributes', () => {
     getNameHistory.mockResolvedValue({ name: 'Emma', sex: 'F', history })
     getNameForecast.mockResolvedValue(fullForecast('Emma', history, overrides))
     await search('Emma')
-    return (await screen.findByText('What drives this forecast')).closest('div') as HTMLElement
+    await userEvent.click(await screen.findByRole('button', { name: /statistics/i }))
+    return (await screen.findByRole('heading', { name: 'What drives this forecast' })).closest(
+      'div'
+    ) as HTMLElement
   }
 
   it("reports this name's measured skill and how many windows stand behind it", async () => {
@@ -565,8 +1141,8 @@ describe('SearchPage per-name forecast attributes', () => {
   it('sits alongside the global model card', async () => {
     await searchWith(peakedHistory())
 
-    expect(screen.getByText('How the forecast is made')).toBeInTheDocument()
-    expect(screen.getByText('What drives this forecast')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'How the forecast is made' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'What drives this forecast' })).toBeVisible()
   })
 })
 
@@ -583,13 +1159,14 @@ describe('SearchPage pooled model', () => {
     getNameForecast.mockResolvedValue(fullForecast('Emma', history))
     await search('Emma')
     await waitFor(() => expect(getNameForecast).toHaveBeenCalled())
+    await userEvent.click(await screen.findByRole('button', { name: /statistics/i }))
     return history
   }
 
   it('names the model that actually produced the line, not ARIMA', async () => {
     await searchWithForecast()
 
-    await waitFor(() => expect(screen.getByText(/^Pooled forecast/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(MODEL_CARD.model_name)).toBeInTheDocument())
     expect(document.body.textContent).not.toMatch(/ARIMA/)
   })
 

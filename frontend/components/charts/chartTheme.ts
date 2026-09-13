@@ -4,7 +4,6 @@ export const CHART_COLORS = {
   // Validated categorical slots for the dark surface (see globals.css tokens)
   history: '#0284c7',
   forecast: '#d95926',
-  validation: '#9085e9',
   bar: '#0ea5e9',
 }
 

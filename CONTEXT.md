@@ -29,7 +29,7 @@ The multi-year window (currently 5 years) projected into unobserved time beyond 
 _Avoid_: Forecast window, prediction period, forward span
 
 **Validation Holdout**:
-The most recent 5-year window of fully observed records used to evaluate forecast accuracy and residual calibration for display on the search page.
+The most recent 5-year window of fully observed records used to measure residual calibration — the coverage the published bands actually achieve. It is a measurement the batch makes, not a figure the search page shows: accuracy on the page is reported from the [[track-record]], which is measured at a fixed five-year horizon across every origin rather than at one origin across five horizons.
 _Avoid_: Test set, evaluation slice, holdout window
 
 **Backtest Span**:
@@ -39,6 +39,14 @@ _Avoid_: Benchmark sweep, rolling test origins, evaluation slice
 **Per-Name Skill**:
 A name's average five-year accuracy against the naive "no change" baseline, taken over every origin in the backtest span at which the name was eligible and its five-year outcome fully observed. Reported on the search page beside the number of windows behind it; a name eligible at fewer origins is averaged over fewer windows rather than excluded.
 _Avoid_: Accuracy score, holdout skill, R-squared
+
+**Track Record**:
+The predictions a name accumulated across the backtest span, indexed by horizon: for horizon *h*, one entry per origin, pairing what the model said *h* years ahead with what was actually observed. It is the source of every accuracy figure the search page reports. A horizon is a complete series in its own right and entries from different horizons are never mixed within one — which is what lets a reader choose the horizon and have every figure on the page move with it.
+_Avoid_: Backtest points, history of predictions, hindcast
+
+**Projected Rank**:
+The rank a projected share earns against the whole field of names observed at its origin, with names too new or too lapsed to forecast held at their last observed share. Ranking against the forecastable names alone would be a different and flatteringly better figure, because roughly four in five observed name/sex pairs cannot be forecast at all.
+_Avoid_: Forecast rank, predicted position, rank forecast
 
 **Popularity Tier**:
 One of four rank-based frequency brackets (`top100`, `top1000`, `top5000`, `rest`) defined within an origin year, used to stratify evaluation, acceptance rules, and conformal interval calibration.

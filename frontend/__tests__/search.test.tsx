@@ -81,8 +81,8 @@ const MODEL_CARD = {
 }
 
 /** A forecast with validation, the model card and measured calibration —
- * everything the "Holdout validation" panel and the chart's interval labels
- * read from. */
+ * everything the statistics disclosure and the chart's interval labels read
+ * from. */
 function fullForecast(
   name: string,
   history: NameRow[],
@@ -310,49 +310,86 @@ describe('SearchPage trend chart once the forecast has loaded', () => {
   })
 })
 
-describe('SearchPage validation panel', () => {
+describe('SearchPage statistics disclosure', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     getMeta.mockResolvedValue({ min_year: 1960, max_year: NEWEST_YEAR })
   })
 
-  it('shows validation figures in readable units rather than scientific notation', async () => {
-    const years = Array.from({ length: 15 }, (_, i) => 2010 + i)
+  async function searchEmma(overrides: Parameters<typeof fullForecast>[2] = {}) {
+    const years = Array.from({ length: 40 }, (_, i) => 1986 + i) // ends 2025
     const history = historyFor('Emma', years)
     getNameHistory.mockResolvedValue({ name: 'Emma', sex: 'F', history })
-    getNameForecast.mockResolvedValue(fullForecast('Emma', history))
-
+    getNameForecast.mockResolvedValue(fullForecast('Emma', history, overrides))
     await search('Emma')
+    await screen.findByRole('table', { name: /forecast/i })
+  }
 
-    const heading = await screen.findByText('Holdout validation')
-    const card = heading.parentElement as HTMLElement
-    expect(card).toBeTruthy()
-    expect(card.textContent).not.toMatch(/e[+-]\d/i)
+  const disclosure = () => screen.getByRole('button', { name: /statistics/i })
+
+  it('keeps the technical figures behind a disclosure, collapsed by default', async () => {
+    // A novice gets a readable page; an expert is one click from everything.
+    await searchEmma()
+
+    expect(disclosure()).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('heading', { name: 'How the forecast is made' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'What drives this forecast' })).toBeNull()
   })
 
-  it("reports the model's skill against the naive no-change baseline", async () => {
-    const years = Array.from({ length: 15 }, (_, i) => 2010 + i)
-    const history = historyFor('Emma', years)
-    getNameHistory.mockResolvedValue({ name: 'Emma', sex: 'F', history })
-    getNameForecast.mockResolvedValue(fullForecast('Emma', history, { skill: 0.25 }))
+  it('opens from the keyboard onto every technical figure, announcing that it is open', async () => {
+    // Nothing is deleted: the holdout's error figures, the per-name attributes
+    // and the model card are all still one keypress away.
+    await searchEmma({ skill: 0.25 })
+    const user = userEvent.setup()
 
-    await search('Emma')
+    disclosure().focus()
+    await user.keyboard('{Enter}')
 
-    // Scoped to the validation panel: the per-name panel states skill too.
-    const panel = (await screen.findByText('Holdout validation')).closest('div')!
-    expect(within(panel).getByText(/no change/i)).toHaveTextContent('25.0%')
+    expect(disclosure()).toHaveAttribute('aria-expanded', 'true')
+    const region = document.getElementById(disclosure().getAttribute('aria-controls')!)!
+    expect(region).toBeVisible()
+    for (const heading of ['What drives this forecast', 'How the forecast is made']) {
+      expect(within(region).getByRole('heading', { name: heading })).toBeInTheDocument()
+    }
+    for (const figure of [/MAE/, /RMSE/, /MAPE/, /12\.3%/, /25\.0%/, /Top 100/, /3\.0×/]) {
+      expect(region.textContent).toMatch(figure)
+    }
+    expect(within(region).getByText(MODEL_CARD.model_name)).toBeInTheDocument()
+    expect(region.textContent).not.toMatch(/\de[-+]?\d/i)
+
+    await user.keyboard(' ')
+    expect(disclosure()).toHaveAttribute('aria-expanded', 'false')
   })
 
-  it('flags a forecast that performs worse than the naive baseline', async () => {
-    const years = Array.from({ length: 15 }, (_, i) => 2010 + i)
-    const history = historyFor('Emma', years)
-    getNameHistory.mockResolvedValue({ name: 'Emma', sex: 'F', history })
-    getNameForecast.mockResolvedValue(fullForecast('Emma', history, { skill: -0.1 }))
+  it('warns in plain sight when the forecast does worse than assuming no change', async () => {
+    // The one thing a visitor most needs to hear is not a technical detail: a
+    // friendlier page must not be a quieter one. See
+    // docs/adr/0005-truthful-confidence-intervals.md.
+    await searchEmma({ skill: -0.1 })
 
-    await search('Emma')
+    const warning = screen.getByText(/worse than.*no change/i)
+    expect(disclosure()).toHaveAttribute('aria-expanded', 'false')
+    expect(warning).toBeVisible()
+    expect(warning).toHaveTextContent('10.0%')
+    const region = document.getElementById(disclosure().getAttribute('aria-controls')!)!
+    expect(region.contains(warning)).toBe(false)
+  })
 
-    const panel = (await screen.findByText('Holdout validation')).closest('div')!
-    expect(within(panel).getByText(/worse than.*no change/i)).toHaveTextContent('10.0%')
+  it('says what the model predicted for a recorded year in one place only', async () => {
+    // The holdout's own predicted-against-actual table answered "what did the
+    // model say about 2023" from a different origin than the track record
+    // does. Only the year-by-year table answers it now, even fully expanded.
+    // See docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
+    await searchEmma()
+    await userEvent.click(disclosure())
+
+    const tables = screen.getAllByRole('table')
+    expect(tables.map((table) => table.getAttribute('aria-label') ?? table.textContent)).toEqual([
+      expect.stringMatching(/^Forecast for Emma/),
+      expect.stringMatching(/year-by-year/i),
+    ])
+    expect(screen.queryByText(/holdout validation/i)).toBeNull()
+    expect(screen.queryByRole('columnheader', { name: /predicted|actual/i })).toBeNull()
   })
 })
 
@@ -1016,7 +1053,10 @@ describe('SearchPage per-name forecast attributes', () => {
     getNameHistory.mockResolvedValue({ name: 'Emma', sex: 'F', history })
     getNameForecast.mockResolvedValue(fullForecast('Emma', history, overrides))
     await search('Emma')
-    return (await screen.findByText('What drives this forecast')).closest('div') as HTMLElement
+    await userEvent.click(await screen.findByRole('button', { name: /statistics/i }))
+    return (await screen.findByRole('heading', { name: 'What drives this forecast' })).closest(
+      'div'
+    ) as HTMLElement
   }
 
   it("reports this name's measured skill and how many windows stand behind it", async () => {
@@ -1061,8 +1101,8 @@ describe('SearchPage per-name forecast attributes', () => {
   it('sits alongside the global model card', async () => {
     await searchWith(peakedHistory())
 
-    expect(screen.getByText('How the forecast is made')).toBeInTheDocument()
-    expect(screen.getByText('What drives this forecast')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'How the forecast is made' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'What drives this forecast' })).toBeVisible()
   })
 })
 
@@ -1079,6 +1119,7 @@ describe('SearchPage pooled model', () => {
     getNameForecast.mockResolvedValue(fullForecast('Emma', history))
     await search('Emma')
     await waitFor(() => expect(getNameForecast).toHaveBeenCalled())
+    await userEvent.click(await screen.findByRole('button', { name: /statistics/i }))
     return history
   }
 

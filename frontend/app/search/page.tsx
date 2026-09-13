@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from 'react'
 import Card from '@/components/ui/Card'
+import Disclosure from '@/components/ui/Disclosure'
 import Notice from '@/components/ui/Notice'
 import Section from '@/components/layout/Section'
 import SexToggle from '@/components/ui/SexToggle'
@@ -436,143 +437,21 @@ export default function SearchPage() {
             </Card>
           )}
 
-          {/* What this name's forecast rests on, beside what the model is */}
-          {forecast && (stratum || validation) && (
-            <div className="grid gap-6 lg:grid-cols-2">
-              <Card variant="default" className="p-6">
-                <h3 className="text-sm font-medium text-[#ededef]">What drives this forecast</h3>
-                <p className="mt-1 text-xs leading-relaxed text-[#8a8f98]">
-                  One pooled model forecasts every name, so there is no fit of its own to report for{' '}
-                  {displayName}. These are the properties of {displayName} that decide how far the
-                  forecast is trusted and how wide its band is.
-                </p>
-                <div className="mt-4">
-                  {skill !== undefined && (
-                    <Fact
-                      label="Skill vs no change"
-                      value={`${skill >= 0 ? '+' : '\u2212'}${formatPercent(Math.abs(skill), 1)}`}
-                    />
-                  )}
-                  {stratum && (
-                    <Fact
-                      label="Popularity tier"
-                      value={TIER_LABELS[stratum.tier] ?? stratum.tier}
-                    />
-                  )}
-                  {stratum && (
-                    <Fact
-                      label="Volatility"
-                      value={
-                        VOLATILITY_LABELS[stratum.volatility_bin] ?? `Bin ${stratum.volatility_bin}`
-                      }
-                    />
-                  )}
-                  {forecastBandWidth && <Fact label="Band width (95%)" value={forecastBandWidth} />}
-                  {peak && <Fact label="Against its peak" value={peak} />}
-                </div>
-                {skill !== undefined && (
-                  <p className="mt-4 text-xs leading-relaxed text-[#8a8f98]">
-                    Skill is averaged over {validation?.skill_windows} five-year window
-                    {validation?.skill_windows === 1 ? '' : 's'} since 1995 — every window{' '}
-                    {displayName} was eligible for — not the most recent one alone.
-                  </p>
-                )}
-              </Card>
-              {/* One model forecasts every name, so there is no per-name fit
-                  to report an order or residual diagnostics for. What is
-                  honestly sayable is what the model is and what it learned
-                  from. See docs/adr/0010-a-pooled-model-replaces-per-name-arima.md. */}
-              {model && (
-                <Card variant="default" className="p-6">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-medium text-[#ededef]">How the forecast is made</h3>
-                    <Tag variant="accent">POOLED</Tag>
-                  </div>
-                  <p className="mt-1 text-xs leading-relaxed text-[#8a8f98]">
-                    Every name is forecast by one model, trained on how names in general have moved
-                    — not by a model fitted to this name alone.
-                  </p>
-                  <div className="mt-4">
-                    <Fact label="Model" value={model.model_name} />
-                    <Fact
-                      label="Trained on"
-                      value={`${formatCount(model.training_rows)} name-years, ${model.training_origins} origins`}
-                    />
-                    <Fact label="Data through" value={String(model.trained_through)} />
-                    <Fact label="Predicts" value={`${model.target}, h=1..${model.horizons}`} />
-                    <Fact label="Row weighting" value={model.sample_weight} />
-                  </div>
-                  <div className="mt-4">
-                    <div className="text-xs text-[#8a8f98]">Features it reads</div>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {model.features.map((feature) => (
-                        <span
-                          key={feature}
-                          className="rounded border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5 font-mono text-[11px] text-[#8a8f98]"
-                        >
-                          {feature}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </Card>
-              )}
-            </div>
-          )}
-
-          {forecast && validation && (
-            <Card variant="default" className="p-6">
-              <h3 className="text-sm font-medium text-[#ededef]">Holdout validation</h3>
-              <p className="mt-1 text-xs leading-relaxed text-[#8a8f98]">
-                The model is retrained without the most recent years, then scored on {displayName}{' '}
-                against what actually happened.
-              </p>
-              <div className="mt-4 grid grid-cols-3 gap-4">
-                <div>
-                  <div className="text-xs text-[#8a8f98]">MAE</div>
-                  <div className="mt-0.5 font-mono text-sm text-[#ededef]">
-                    {formatPercent(validation.mae, 4)}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-[#8a8f98]">RMSE</div>
-                  <div className="mt-0.5 font-mono text-sm text-[#ededef]">
-                    {formatPercent(validation.rmse, 4)}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-[#8a8f98]">MAPE</div>
-                  <div className="mt-0.5 font-mono text-sm text-[#ededef]">
-                    {validation.mape.toFixed(1)}%
-                  </div>
-                </div>
-              </div>
-              {/* Skill compares this name's error against a naive baseline
-                    that just repeats the last observed value, averaged over
-                    every five-year window since 1995 rather than measured on
-                    the holdout alone — see
-                    docs/adr/0010-a-pooled-model-replaces-per-name-arima.md.
-                    A forecast that loses to that baseline is flagged rather
-                    than shown with equal confidence. */}
-              <div className="mt-4">
-                {skill === undefined ? null : skill >= 0 ? (
-                  <p className="text-xs leading-relaxed text-emerald-400">
-                    Beats the naive “no change” baseline by {formatPercent(skill, 1)}: averaged over{' '}
-                    {validation.skill_windows} five-year window
-                    {validation.skill_windows === 1 ? '' : 's'} since 1995, this model&apos;s error
-                    was that much smaller than simply repeating the last recorded value.
-                  </p>
-                ) : (
-                  <Notice variant="warning">
-                    This forecast performs worse than simply assuming no change — across{' '}
-                    {validation.skill_windows} five-year window
-                    {validation.skill_windows === 1 ? '' : 's'} since 1995 its error was{' '}
-                    {formatPercent(Math.abs(skill), 1)} higher than the naive baseline&apos;s. Treat
-                    the forecast and its confidence bands with caution.
-                  </Notice>
-                )}
-              </div>
-            </Card>
+          {/* Skill compares this name's error against a naive baseline that
+              just repeats the last observed value, averaged over every
+              five-year window since 1995 — see
+              docs/adr/0010-a-pooled-model-replaces-per-name-arima.md. A
+              forecast that loses to that baseline is flagged where it cannot
+              be missed, never behind the statistics disclosure: a friendlier
+              page must not be a quieter one. */}
+          {forecast && validation && skill !== undefined && skill < 0 && (
+            <Notice variant="warning">
+              This forecast performs worse than simply assuming no change — across{' '}
+              {validation.skill_windows} five-year window
+              {validation.skill_windows === 1 ? '' : 's'} since 1995 its error was{' '}
+              {formatPercent(Math.abs(skill), 1)} higher than the naive baseline&apos;s. Treat the
+              forecast and its confidence bands with caution.
+            </Notice>
           )}
 
           {/* Year-by-year table */}
@@ -720,6 +599,139 @@ export default function SearchPage() {
               </table>
             </div>
           </Card>
+
+          {/* What this name's forecast rests on, beside what the model is —
+              behind a disclosure, below the evidence a visitor reads first */}
+          {forecast && (stratum || validation) && (
+            <Disclosure summary="Statistics behind this forecast">
+              <div className="grid gap-6 lg:grid-cols-2">
+                <Card variant="default" className="p-6">
+                  <h3 className="text-sm font-medium text-[#ededef]">What drives this forecast</h3>
+                  <p className="mt-1 text-xs leading-relaxed text-[#8a8f98]">
+                    One pooled model forecasts every name, so there is no fit of its own to report
+                    for {displayName}. These are the properties of {displayName} that decide how far
+                    the forecast is trusted and how wide its band is.
+                  </p>
+                  <div className="mt-4">
+                    {skill !== undefined && (
+                      <Fact
+                        label="Skill vs no change"
+                        value={`${skill >= 0 ? '+' : '\u2212'}${formatPercent(Math.abs(skill), 1)}`}
+                      />
+                    )}
+                    {stratum && (
+                      <Fact
+                        label="Popularity tier"
+                        value={TIER_LABELS[stratum.tier] ?? stratum.tier}
+                      />
+                    )}
+                    {stratum && (
+                      <Fact
+                        label="Volatility"
+                        value={
+                          VOLATILITY_LABELS[stratum.volatility_bin] ??
+                          `Bin ${stratum.volatility_bin}`
+                        }
+                      />
+                    )}
+                    {forecastBandWidth && (
+                      <Fact label="Band width (95%)" value={forecastBandWidth} />
+                    )}
+                    {peak && <Fact label="Against its peak" value={peak} />}
+                  </div>
+                  {skill !== undefined && (
+                    <p className="mt-4 text-xs leading-relaxed text-[#8a8f98]">
+                      Skill is averaged over {validation?.skill_windows} five-year window
+                      {validation?.skill_windows === 1 ? '' : 's'} since 1995 — every window{' '}
+                      {displayName} was eligible for — not the most recent one alone.
+                    </p>
+                  )}
+                </Card>
+                {/* One model forecasts every name, so there is no per-name fit
+                  to report an order or residual diagnostics for. What is
+                  honestly sayable is what the model is and what it learned
+                  from. See docs/adr/0010-a-pooled-model-replaces-per-name-arima.md. */}
+                {model && (
+                  <Card variant="default" className="p-6">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-medium text-[#ededef]">
+                        How the forecast is made
+                      </h3>
+                      <Tag variant="accent">POOLED</Tag>
+                    </div>
+                    <p className="mt-1 text-xs leading-relaxed text-[#8a8f98]">
+                      Every name is forecast by one model, trained on how names in general have
+                      moved — not by a model fitted to this name alone.
+                    </p>
+                    <div className="mt-4">
+                      <Fact label="Model" value={model.model_name} />
+                      <Fact
+                        label="Trained on"
+                        value={`${formatCount(model.training_rows)} name-years, ${model.training_origins} origins`}
+                      />
+                      <Fact label="Data through" value={String(model.trained_through)} />
+                      <Fact label="Predicts" value={`${model.target}, h=1..${model.horizons}`} />
+                      <Fact label="Row weighting" value={model.sample_weight} />
+                    </div>
+                    <div className="mt-4">
+                      <div className="text-xs text-[#8a8f98]">Features it reads</div>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {model.features.map((feature) => (
+                          <span
+                            key={feature}
+                            className="rounded border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5 font-mono text-[11px] text-[#8a8f98]"
+                          >
+                            {feature}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </Card>
+                )}
+              </div>
+              {forecast && validation && (
+                <Card variant="default" className="mt-6 p-6">
+                  <h3 className="text-sm font-medium text-[#ededef]">
+                    Errors on the calibration holdout
+                  </h3>
+                  <p className="mt-1 text-xs leading-relaxed text-[#8a8f98]">
+                    The model is retrained without the most recent years and scored on {displayName}{' '}
+                    against what actually happened; that holdout is what sets how wide the shaded
+                    bands are. What the model said about each recorded year is in the year-by-year
+                    table.
+                  </p>
+                  <div className="mt-4 grid grid-cols-3 gap-4">
+                    <div>
+                      <div className="text-xs text-[#8a8f98]">MAE</div>
+                      <div className="mt-0.5 font-mono text-sm text-[#ededef]">
+                        {formatPercent(validation.mae, 4)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-[#8a8f98]">RMSE</div>
+                      <div className="mt-0.5 font-mono text-sm text-[#ededef]">
+                        {formatPercent(validation.rmse, 4)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-[#8a8f98]">MAPE</div>
+                      <div className="mt-0.5 font-mono text-sm text-[#ededef]">
+                        {validation.mape.toFixed(1)}%
+                      </div>
+                    </div>
+                  </div>
+                  {skill !== undefined && skill >= 0 && (
+                    <p className="mt-4 text-xs leading-relaxed text-emerald-400">
+                      Beats the naive “no change” baseline by {formatPercent(skill, 1)}: averaged
+                      over {validation.skill_windows} five-year window
+                      {validation.skill_windows === 1 ? '' : 's'} since 1995, this model&apos;s
+                      error was that much smaller than simply repeating the last recorded value.
+                    </p>
+                  )}
+                </Card>
+              )}
+            </Disclosure>
+          )}
         </div>
       )}
     </Section>

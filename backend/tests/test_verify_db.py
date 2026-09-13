@@ -96,6 +96,9 @@ def test_verify_fails_on_a_database_with_an_empty_table(tmp_path):
 
 # --- The model-quality deploy gate -----------------------------------------
 
+# A stored forecast in the shape the page reads: one carrying a track record.
+CURRENT_PAYLOAD = '{"forecast": [], "validation": null, "track_record": {}}'
+
 # The scores the real 2025 artifact was measured at (ADR 0010): every tier
 # positive, the top 100 comfortably above the pinned floor.
 PASSING_SKILLS = {"top100": 0.374, "top1000": 0.238, "top5000": 0.096, "rest": 0.077}
@@ -109,6 +112,7 @@ def _artifact(
     span: tuple[int, int, int] = (26, 1995, 2020),
     max_year: int = 2025,
     evaluation_rows: list[tuple] | None = None,
+    payload: str = CURRENT_PAYLOAD,
 ) -> str:
     """A structurally complete artifact carrying the scores it claims.
 
@@ -126,7 +130,7 @@ def _artifact(
         [("Emma", "F", 1000, year, 0.01, 1) for year in range(1880, max_year + 1)],
     )
     conn.execute("CREATE TABLE forecasts (name TEXT, sex TEXT, payload TEXT)")
-    conn.execute("INSERT INTO forecasts VALUES ('emma', 'F', '{}')")
+    conn.execute("INSERT INTO forecasts VALUES ('emma', 'F', ?)", (payload,))
     conn.execute(db_schema.CREATE_MODEL_EVALUATION_TABLE)
     if evaluation_rows is None:
         skills = PASSING_SKILLS if skills is None else skills
@@ -285,3 +289,24 @@ def test_the_command_exits_non_zero_when_the_gate_fails(tmp_path, monkeypatch, c
 
     assert excinfo.value.code == 1
     assert "top100" in capsys.readouterr().err
+
+
+def test_verify_fails_on_an_artifact_whose_forecasts_predate_the_track_record(tmp_path):
+    """The database is published independently of the code (ADR 0006).
+
+    So a deploy can meet an artifact whose batch ran before forecasts carried a
+    track record — structurally complete, well scored, and with nothing for the
+    search page's accuracy columns to show. The gate names the rebuild that
+    fixes it rather than leaving the maintainer to work out what is missing.
+    """
+    from scripts.verify_db import VerificationError, verify
+
+    stale = _artifact(
+        tmp_path,
+        "predates-track-record.db",
+        payload='{"forecast": [], "validation": {"mae": 0.1, "points": []}}',
+    )
+
+    with pytest.raises(VerificationError, match="track record") as excinfo:
+        verify(stale)
+    assert "make precompute-forecasts" in str(excinfo.value)

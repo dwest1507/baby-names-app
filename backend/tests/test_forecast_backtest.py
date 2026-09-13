@@ -33,6 +33,41 @@ def test_the_span_reaches_every_origin_whose_five_year_window_has_closed():
     assert list(pooled.backtest_span(2026)) == list(range(1995, 2022))
 
 
+def test_the_track_record_is_fitted_at_every_origin_with_a_year_since_observed():
+    """The span, and the origins after it whose shorter horizons have closed.
+
+    2024 cannot be checked five years ahead, but it can one year ahead — and
+    without those origins every one-year record would stop at 2021, four years
+    short of the years a visitor looks at first. Two sets, then: the span is
+    *scored*, and this is *fitted*.
+    """
+    fitted = pooled.track_record_origins(2025)
+
+    assert list(fitted) == list(range(1995, 2025))
+    assert set(pooled.backtest_span(2025)) < set(fitted)
+
+
+def test_an_origin_whose_five_year_window_has_not_closed_is_never_scored():
+    """Skill and the tier scores the deploy gate reads are closed windows only.
+
+    An origin fitted for the track record has one to four of its years
+    observed. Tallying those would mix one-year errors into a five-year figure
+    and move what `model_evaluation` certifies without anyone deciding to.
+    """
+    closed = pooled.BacktestTally()
+    closed.add(2020, [scored_row("ada|F", 2020)], np.full((1, pooled.H), 1.5))
+
+    with_open = pooled.BacktestTally()
+    with_open.add(2020, [scored_row("ada|F", 2020)], np.full((1, pooled.H), 1.5))
+    for origin in range(2021, 2025):
+        open_row = scored_row("ada|F", origin)
+        open_row["actual"] = [2.0] * (2025 - origin) + [None] * (pooled.H - (2025 - origin))
+        with_open.add(origin, [open_row], np.full((1, pooled.H), 9.0))
+
+    assert with_open.skill_per_name() == closed.skill_per_name()
+    assert with_open.evaluation() == closed.evaluation()
+
+
 def flat_series(count: int, first_year: int = 1940, last_year: int = 2025) -> list:
     """`count` name/sex series, each observed every year of the same span."""
     years = np.arange(first_year, last_year + 1, dtype=np.int32)

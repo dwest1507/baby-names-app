@@ -103,6 +103,33 @@ function peakPosition(history: NameRow[]): string | null {
   return `${(below * 100).toFixed(0)}% below its ${peak.year} peak`
 }
 
+/** Signed relative error, `(model − actual) / actual`, to the 0.1% it is shown
+ *  at. The summary averages these rather than the unrounded errors, so that
+ *  averaging the column by hand gives exactly what the summary says. */
+function shownError(model: number, actual: number): number {
+  const error = (model - actual) / actual
+  return (Math.sign(error) * Math.round(Math.abs(error) * 1000)) / 1000
+}
+
+/** The horizons a visitor can choose between: one through five years ahead. */
+const HORIZONS = [1, 2, 3, 4, 5]
+
+function yearsLabel(years: number): string {
+  return `${years} year${years === 1 ? '' : 's'}`
+}
+
+/** A signed relative error as `+10.0%` / `−5.0%`. */
+function formatError(error: number): string {
+  return `${error >= 0 ? '+' : '\u2212'}${(Math.abs(error) * 100).toFixed(1)}%`
+}
+
+/** The colour of a miss, by direction alone: running high is not better or
+ *  worse than running low, so neither gets the page's good/bad colours. */
+function errorColour(error: number | undefined): string {
+  if (error === undefined || error === 0) return 'text-[#8a8f98]'
+  return error > 0 ? 'text-amber-300' : 'text-sky-300'
+}
+
 function Fact({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center justify-between border-b border-white/[0.04] py-2 text-sm last:border-0">
@@ -122,6 +149,10 @@ export default function SearchPage() {
   const [forecastLoading, setForecastLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [latestDataYear, setLatestDataYear] = useState<number | null>(null)
+  // How far ahead the model was predicting, for the historical table and its
+  // summary. One year is the question most visitors are asking. See
+  // docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
+  const [horizon, setHorizon] = useState(1)
 
   // The newest year present in the data decides whether a name is still in
   // current use; it is read from the data rather than hardcoded.
@@ -174,16 +205,28 @@ export default function SearchPage() {
   // never the nominal 80%. No calibration, no figure. See
   // docs/adr/0011-conformal-bands-keyed-by-strata.md.
   const rangeCoverage = forecast?.calibration?.['0.8']?.empirical_coverage
-  // The holdout is the window the batch withheld: its first year is the year
-  // after the origin the model was trained through.
-  const holdoutPoints = validation?.points ?? []
-  const holdoutWindow = holdoutPoints.length
-    ? {
-        origin: holdoutPoints[0].year - 1,
-        first: holdoutPoints[0].year,
-        last: holdoutPoints[holdoutPoints.length - 1].year,
-      }
-    : null
+  // What the model said about each recorded year, from the origin `horizon`
+  // years before it — one horizon at a time, never mixed. Only a name with a
+  // forecast has one to show, and a name eligible at few origins may have none
+  // at some horizons.
+  const hasForecast = forecast !== null && forecast.forecast.length > 0
+  const projectedShares = new Map(
+    (forecast?.track_record[String(horizon)] ?? []).map((entry) => [
+      entry.year,
+      entry.projected_share,
+    ])
+  )
+  const horizonLabel = yearsLabel(horizon)
+  // Accuracy summarised from exactly the errors the historical table shows.
+  const checkedErrors =
+    history && hasForecast
+      ? history.flatMap((row) => {
+          const projected = projectedShares.get(row.year)
+          return projected === undefined ? [] : [shownError(projected, row.popularity_percent)]
+        })
+      : []
+  const meanMiss = checkedErrors.reduce((sum, e) => sum + Math.abs(e), 0) / checkedErrors.length
+  const meanError = checkedErrors.reduce((sum, e) => sum + e, 0) / checkedErrors.length
   const peak = history ? peakPosition(history) : null
   const observedYears = history?.length ?? 0
   const forecastAbsent = forecast !== null && forecast.forecast.length === 0
@@ -220,8 +263,8 @@ export default function SearchPage() {
         </h1>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[#8a8f98]">
           Look up any name for the years it was actually recorded, plus a 5-year forecast with
-          measured uncertainty bands and holdout validation. Forecasts are produced only for names
-          still in use in the most recent year of data.
+          measured uncertainty bands and a record of what past forecasts said. Forecasts are
+          produced only for names still in use in the most recent year of data.
         </p>
       </div>
 
@@ -332,6 +375,7 @@ export default function SearchPage() {
                   model: null,
                   calibration: null,
                   stratum: null,
+                  track_record: {},
                 }}
               />
             )}
@@ -472,9 +516,8 @@ export default function SearchPage() {
             <Card variant="default" className="p-6">
               <h3 className="text-sm font-medium text-[#ededef]">Holdout validation</h3>
               <p className="mt-1 text-xs leading-relaxed text-[#8a8f98]">
-                {holdoutWindow
-                  ? `The model is trained through ${holdoutWindow.origin} and then scored on ${holdoutWindow.first}\u2013${holdoutWindow.last}, years it never saw, against what actually happened to ${displayName}.`
-                  : `The model is retrained without the most recent years, then scored on ${displayName} against what actually happened.`}
+                The model is retrained without the most recent years, then scored on {displayName}{' '}
+                against what actually happened.
               </p>
               <div className="mt-4 grid grid-cols-3 gap-4">
                 <div>
@@ -496,43 +539,6 @@ export default function SearchPage() {
                   </div>
                 </div>
               </div>
-              {/* The three figures above are a claim about the window;
-                    the window itself is the evidence for it. One row per
-                    observed year the model did not see. */}
-              {validation.points.length > 0 && (
-                <div className="mt-4 overflow-x-auto">
-                  <table
-                    className="w-full text-left text-sm"
-                    aria-label={`Holdout window: predicted against actual for ${displayName}`}
-                  >
-                    <thead>
-                      <tr className="text-xs text-[#8a8f98]">
-                        <th className="py-2 font-medium">Year</th>
-                        <th className="py-2 text-right font-medium">Actual</th>
-                        <th className="py-2 text-right font-medium">Predicted</th>
-                        <th className="py-2 text-right font-medium">Error</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {validation.points.map((point) => (
-                        <tr key={point.year} className="border-t border-white/[0.04]">
-                          <td className="py-2 font-mono text-xs text-[#ededef]">{point.year}</td>
-                          <td className="py-2 text-right font-mono text-xs text-[#ededef]">
-                            {formatPercent(point.actual, 4)}
-                          </td>
-                          <td className="py-2 text-right font-mono text-xs text-[#8a8f98]">
-                            {formatPercent(point.predicted, 4)}
-                          </td>
-                          <td className="py-2 text-right font-mono text-xs text-[#8a8f98]">
-                            {point.predicted >= point.actual ? '+' : '\u2212'}
-                            {formatPercent(Math.abs(point.predicted - point.actual), 4)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
               {/* Skill compares this name's error against a naive baseline
                     that just repeats the last observed value, averaged over
                     every five-year window since 1995 rather than measured on
@@ -566,6 +572,80 @@ export default function SearchPage() {
             <h3 className="border-b border-white/[0.06] px-6 py-4 text-sm font-medium text-[#ededef]">
               Year-by-year data
             </h3>
+            {hasForecast && (
+              <div className="flex flex-wrap items-center gap-3 border-b border-white/[0.06] px-6 py-3">
+                <span id="horizon-label" className="text-xs text-[#8a8f98]">
+                  Years ahead
+                </span>
+                <div
+                  role="radiogroup"
+                  aria-labelledby="horizon-label"
+                  className="inline-flex rounded-lg border border-white/[0.08] bg-white/[0.03] p-0.5"
+                >
+                  {HORIZONS.map((h) => (
+                    <label
+                      key={h}
+                      className={`cursor-pointer rounded-md px-3 py-1 text-xs transition-all duration-150 focus-within:shadow-[0_0_0_2px_rgba(14,165,233,0.5)] ${
+                        horizon === h
+                          ? 'bg-[#0ea5e9]/15 text-[#38bdf8] shadow-[inset_0_0_0_1px_rgba(14,165,233,0.3)]'
+                          : 'text-[#8a8f98] hover:text-[#ededef]'
+                      }`}
+                    >
+                      {/* Native radios, so arrow keys move between them. */}
+                      <input
+                        type="radio"
+                        name="horizon"
+                        value={h}
+                        checked={horizon === h}
+                        onChange={() => setHorizon(h)}
+                        className="sr-only"
+                      />
+                      {yearsLabel(h)}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+            {hasForecast && (
+              <p className="border-b border-white/[0.06] px-6 py-3 text-xs leading-relaxed text-[#8a8f98]">
+                Projected share is what the model predicted for each year {horizonLabel} before it.
+                Error is how far that prediction missed, as a share of what actually happened:{' '}
+                <span className="text-amber-300">+ ran high</span>,{' '}
+                <span className="text-sky-300">{'\u2212'} ran low</span>.
+              </p>
+            )}
+            {hasForecast && checkedErrors.length === 0 && (
+              <p className="border-b border-white/[0.06] px-6 py-3 text-xs leading-relaxed text-[#8a8f98]">
+                The model has not yet been checked {horizonLabel} ahead for {displayName}: no year
+                it predicted that far ahead has been recorded since.
+              </p>
+            )}
+            {checkedErrors.length > 0 && (
+              <div
+                role="group"
+                aria-label={`Accuracy of forecasts for ${displayName}, ${horizonLabel} ahead`}
+                className="flex flex-wrap gap-8 border-b border-white/[0.06] px-6 py-3"
+              >
+                <div>
+                  <div className="text-xs text-[#8a8f98]">Checked on</div>
+                  <div className="mt-0.5 font-mono text-sm text-[#ededef]">
+                    {checkedErrors.length} year{checkedErrors.length === 1 ? '' : 's'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-[#8a8f98]">Typical miss</div>
+                  <div className="mt-0.5 font-mono text-sm text-[#ededef]">
+                    {(meanMiss * 100).toFixed(1)}%
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-[#8a8f98]">Average error</div>
+                  <div className={`mt-0.5 font-mono text-sm ${errorColour(meanError)}`}>
+                    {formatError(meanError)}
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="max-h-96 overflow-x-auto overflow-y-auto">
               <table
                 className="w-full text-left text-sm"
@@ -577,26 +657,51 @@ export default function SearchPage() {
                     <th className="px-6 py-3 text-right font-medium">Babies</th>
                     <th className="px-6 py-3 text-right font-medium">Share of births</th>
                     <th className="px-6 py-3 text-right font-medium">Rank</th>
+                    {hasForecast && (
+                      <>
+                        <th className="px-6 py-3 text-right font-medium">Projected share</th>
+                        <th className="px-6 py-3 text-right font-medium">Error</th>
+                      </>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
-                  {[...history].reverse().map((row) => (
-                    <tr
-                      key={row.year}
-                      className="border-b border-white/[0.04] transition-colors last:border-0 hover:bg-white/[0.03]"
-                    >
-                      <td className="px-6 py-2.5 font-mono text-xs text-[#ededef]">{row.year}</td>
-                      <td className="px-6 py-2.5 text-right font-mono text-xs text-[#ededef]">
-                        {formatCount(row.total_count)}
-                      </td>
-                      <td className="px-6 py-2.5 text-right font-mono text-xs text-[#8a8f98]">
-                        {formatPercent(row.popularity_percent, 4)}
-                      </td>
-                      <td className="px-6 py-2.5 text-right font-mono text-xs text-[#8a8f98]">
-                        {row.popularity_rank}
-                      </td>
-                    </tr>
-                  ))}
+                  {[...history].reverse().map((row) => {
+                    const projected = projectedShares.get(row.year)
+                    const error =
+                      projected === undefined
+                        ? undefined
+                        : shownError(projected, row.popularity_percent)
+                    return (
+                      <tr
+                        key={row.year}
+                        className="border-b border-white/[0.04] transition-colors last:border-0 hover:bg-white/[0.03]"
+                      >
+                        <td className="px-6 py-2.5 font-mono text-xs text-[#ededef]">{row.year}</td>
+                        <td className="px-6 py-2.5 text-right font-mono text-xs text-[#ededef]">
+                          {formatCount(row.total_count)}
+                        </td>
+                        <td className="px-6 py-2.5 text-right font-mono text-xs text-[#8a8f98]">
+                          {formatPercent(row.popularity_percent, 4)}
+                        </td>
+                        <td className="px-6 py-2.5 text-right font-mono text-xs text-[#8a8f98]">
+                          {row.popularity_rank}
+                        </td>
+                        {hasForecast && (
+                          <>
+                            <td className="px-6 py-2.5 text-right font-mono text-xs text-[#8a8f98]">
+                              {projected === undefined ? '' : formatPercent(projected, 4)}
+                            </td>
+                            <td
+                              className={`px-6 py-2.5 text-right font-mono text-xs ${errorColour(error)}`}
+                            >
+                              {error === undefined ? '' : formatError(error)}
+                            </td>
+                          </>
+                        )}
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>

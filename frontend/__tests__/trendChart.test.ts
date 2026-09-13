@@ -22,6 +22,7 @@ function payload(overrides: Partial<ForecastPayload> = {}): ForecastPayload {
     model: null,
     calibration: null,
     stratum: null,
+    track_record: {},
     ...overrides,
   }
 }
@@ -66,21 +67,14 @@ describe('buildChartRows', () => {
     expect(rows.filter((row) => row.ci80 !== undefined).map((row) => row.year)).toEqual([2026])
   })
 
-  it('draws only recorded history and the forecast, not the validation holdout', () => {
+  it('draws only recorded history and the forecast, not what past forecasts said', () => {
     // A third line competes with the story the chart tells and repeats what
-    // the page reports elsewhere. See issue #59.
-    const withHoldout = payload({
-      validation: {
-        mae: 0.0001,
-        rmse: 0.0002,
-        mape: 5,
-        skill: 0.2,
-        skill_windows: 26,
-        points: [2019, 2020, 2021].map((year) => ({ year, actual: 0.001, predicted: 0.0042 })),
-      },
+    // the page reports in its historical table. See issue #59.
+    const withTrackRecord = payload({
+      track_record: { '5': [2023, 2024].map((year) => ({ year, projected_share: 0.0042 })) },
     })
 
-    const { rows } = buildChartRows(withHoldout)
+    const { rows } = buildChartRows(withTrackRecord)
 
     expect(rows.map((row) => row.year)).toEqual([2022, 2023, 2024, 2025, 2026, 2027])
     expect(JSON.stringify(rows)).not.toContain('0.42')

@@ -64,6 +64,14 @@ def build_response(
     (`queries.get_model_card`). One pooled model forecasts every name, so it
     describes the batch rather than this name, and it is served under `model`
     where a per-name ARIMA fit's order and residual diagnostics used to go.
+
+    `track_record` is what the model said about each year, keyed by horizon:
+    for horizon *h*, year *Y*'s entry is the prediction made at origin
+    *Y − h*. The batch stores it as a start year and parallel arrays; this is
+    where it becomes one object per year — the one place the stored payload is
+    not served verbatim, and composition rather than fitting, so ADR 0004
+    holds. A year the model was never checked on has no entry. See
+    docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
     """
     return {
         "name": history[0]["name"],
@@ -76,6 +84,18 @@ def build_response(
         "model": model_card if stored else None,
         "calibration": calibration if stored else None,
         "stratum": _stratum(stored) if stored else None,
+        "track_record": _track_record(stored) if stored else {},
+    }
+
+
+def _track_record(stored: dict) -> dict[str, list[dict]]:
+    return {
+        horizon: [
+            {"year": series["start"] + offset, "projected_share": share}
+            for offset, share in enumerate(series["projected_share"])
+            if share is not None
+        ]
+        for horizon, series in stored.get("track_record", {}).items()
     }
 
 

@@ -93,9 +93,39 @@ def verify(db_path: str) -> dict[str, int]:
             "This looks like a truncated or incomplete build."
         )
 
+    _check_forecast_payloads(db_path)
     _check_model_evaluation(db_path)
 
     return counts
+
+
+def _check_forecast_payloads(db_path: str) -> None:
+    """Refuse forecasts stored before they carried a track record.
+
+    The database is published independently of the code (ADR 0006), so a
+    deploy can meet an artifact built by an older batch: complete, well
+    scored, and with nothing for the search page's accuracy columns to render.
+    Every payload a current batch writes carries `track_record`, empty or not.
+    See docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
+    """
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        (stale,) = conn.execute(
+            "SELECT COUNT(*) FROM forecasts WHERE json_type(payload, '$.track_record') IS NULL"
+        ).fetchone()
+    except sqlite3.OperationalError as e:
+        raise VerificationError(
+            f"`{db_path}` has forecasts whose payload could not be read as JSON: {e}"
+        ) from e
+    finally:
+        conn.close()
+
+    if stale:
+        raise VerificationError(
+            f"`{db_path}` has {stale:,} forecast(s) stored without a track record, "
+            "so it was built by a batch that predates it and the search page would "
+            "have no accuracy to show. Rebuild them with `make precompute-forecasts`."
+        )
 
 
 def _read_model_evaluation(db_path: str) -> tuple[list[tuple], int]:

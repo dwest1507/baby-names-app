@@ -21,11 +21,12 @@ scored and stored are all the same forecasts the search page draws. See
 
 The batch is one pass along the rolling backtest span — every origin from
 1995 whose five-year window has since closed, 26 of them on the 2025 database
-— followed by the production origin. Each origin gets its own fit, trained
-only on windows that had already closed by then, so nothing it is scored on
-was available to it.
+— then the origins after it whose shorter horizons have closed (2021-2024),
+then the production origin. Each origin gets its own fit, trained only on
+windows that had already closed by then, so nothing it is scored on was
+available to it.
 
-Four things come out of that pass, and three of the origins in it have a
+Five things come out of that pass, and three of the origins in it have a
 second job:
 
 * every origin contributes each eligible name's five-year skill against the
@@ -33,6 +34,13 @@ second job:
   labels the forecast line with. One window would mostly measure the
   2020-21 birth-rate shock; 26 measure the name. The same windows, summed per
   popularity tier, are what `model_evaluation` publishes for the deploy gate.
+* every origin in the span, and every one after it, leaves what it predicted
+  at each horizon whose year has since been recorded, for every name eligible
+  there. Year by year and horizon by horizon, those are the name's track
+  record: what the model said about each year, which the search page sets
+  beside what happened. The origins after the span feed this and nothing else
+  — their five-year windows have not closed, so they are fitted, not scored.
+  See docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
 * `calibration` — ten years back. The spread of *its* errors sets the
   published bands, without those bands having seen the holdout they are then
   measured on. They are built per `(popularity tier, volatility bin)` and
@@ -40,9 +48,9 @@ second job:
   `calibration` table is out-of-sample *and* describes names like the one
   being looked at rather than the average name. See
   docs/adr/0011-conformal-bands-keyed-by-strata.md.
-* `holdout` — five years back, and the last origin of the span. Its
-  predicted-against-actual points are the validation table the search page
-  shows.
+* `holdout` — five years back, and the last origin of the span. It measures
+  the coverage the calibration origin's bands actually achieve, and its error
+  figures are this one window's.
 * `production` — the newest observed year. Its forecast is what gets served.
 
 The fits share one `pooled.TrainingWindow`, which builds each origin's
@@ -199,11 +207,13 @@ def _validation(row, predicted: np.ndarray, bands: dict, stratum) -> dict | None
     """Score one name's five-year holdout, and record what its bands covered.
 
     The error figures are this one window's: the five years from the holdout
-    origin, which are what the search page tabulates predicted against actual.
-    `skill` is deliberately *not* among them — a single window's skill is
-    mostly a measurement of that window, and the 2021-25 one contains the
-    birth-rate shock. It is merged in afterwards from `pooled.BacktestTally`,
-    averaged over every origin the name was eligible at since 1995.
+    origin. Its points are not stored — what the model said about a year is the
+    track record's to report, at one horizon, and two answers to that question
+    must not reach one page (ADR 0012). `skill` is deliberately *not* among
+    them — a single window's skill is mostly a measurement of that window, and
+    the 2021-25 one contains the birth-rate shock. It is merged in afterwards
+    from `pooled.BacktestTally`, averaged over every origin the name was
+    eligible at since 1995.
 
     `coverage` is this name's contribution to the coverage figure for the cell
     whose band it was given — and `stratum` is the one it was in *at the
@@ -234,10 +244,6 @@ def _validation(row, predicted: np.ndarray, bands: dict, stratum) -> dict | None
         "mae": float(np.mean(np.abs(errors))),
         "rmse": float(np.sqrt(np.mean(errors**2))),
         "mape": float(np.mean(np.abs(errors / np.maximum(actual, 1e-12))) * 100),
-        "points": [
-            {"year": int(row["origin"] + i + 1), "actual": float(a), "predicted": float(p)}
-            for i, (a, p) in enumerate(zip(actual, predicted, strict=True))
-        ],
         "coverage": coverage,
     }
 
@@ -330,13 +336,23 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
         # `bands` are set at the calibration origin and `validations` at the
         # holdout origin, both of which come earlier in the sequence than the
         # points that read them.
+        #
+        # Two origin sets, and they are not interchangeable. `scored` is the
+        # span, whose five-year windows have closed: it alone feeds skill and
+        # `model_evaluation`, which the deploy gate reads. `fitted` adds the
+        # origins after it, whose shorter horizons can already be checked: they
+        # feed the track record and nothing else.
         span = list(pooled.backtest_span(production_origin))
         scored = set(span)
+        fitted = set(pooled.track_record_origins(production_origin))
         window = pooled.TrainingWindow(series)
         tally = pooled.BacktestTally()
         edges: list[float] = []
         bands: dict = {}
         validations: dict = {}
+        track_records: dict[str, dict[int, dict[int, float]]] = defaultdict(
+            lambda: defaultdict(dict)
+        )
 
         # A database too short to reach 1995 has no span to score; the
         # calibration and holdout origins are still fitted, and the artifact
@@ -345,10 +361,12 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
             f"Backtesting {len(span)} rolling origins"
             + (f" ({span[0]}:{span[-1]})..." if span else "...")
         )
-        for origin in sorted(scored | {calibration_origin, holdout_origin}):
+        for origin in sorted(fitted | {calibration_origin, holdout_origin}):
             rows, predicted, _ = _fit(window, origin, note, threads)
             if origin in scored:
                 tally.add(origin, rows, predicted)
+            if origin in fitted:
+                _retain_track_record(track_records, origin, rows, predicted)
             if origin == calibration_origin:
                 # The volatility bin edges are tertiles of the wobble present
                 # at this origin, and they are fixed here and reused at every
@@ -399,6 +417,7 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
                 # least that window in the tally — the holdout origin is the
                 # span's last — so the two always arrive together.
                 "validation": _with_skill(validations.get(row["key"]), skills, row["key"]),
+                "track_record": _compact_track_record(track_records.pop(row["key"], {})),
             }
             hits, counts = _split_coverage(stored)
             conn.execute(
@@ -453,6 +472,44 @@ def run(db_path: str, threads: int = pooled.THREADS, progress=None) -> dict:
         "calibration": calibration,
         "model": card,
     }
+
+
+def _retain_track_record(track_records: dict, origin: int, rows, predicted: np.ndarray) -> None:
+    """Keep what one fitted origin said about each year it can be checked on.
+
+    Every horizon whose year has since been observed for the name: an entry is
+    a prediction *paired with* an outcome, and a year with no recorded births
+    has nothing to pair it with. That one rule is also what limits an origin
+    after the span to its shorter horizons — its later years have not happened.
+    Only the track record's origins call this — the calibration origin, fitted
+    for another reason, must not leave evidence the page reports as a record.
+    """
+    for i, row in enumerate(rows):
+        for horizon in range(1, pooled.H + 1):
+            if row["actual"][horizon - 1] is not None:
+                track_records[row["key"]][horizon][origin + horizon] = float(
+                    predicted[i][horizon - 1]
+                )
+
+
+def _compact_track_record(predictions: dict[int, dict[int, float]]) -> dict:
+    """`{"1": {"start": 1996, "projected_share": [...]}, ...}`, keyed by horizon.
+
+    A start year and a parallel array rather than one object per year: across
+    ~24,700 names the repeated keys would cost the artifact roughly 100 MB,
+    which gzip removes on the wire anyway (ADR 0012). A year inside the run the
+    model was never checked on is `None`, not a zero nobody measured, and a
+    horizon with no entries at all is absent rather than empty.
+    `app.services.forecast` expands this back into per-year objects.
+    """
+    compact = {}
+    for horizon, by_year in sorted(predictions.items()):
+        first, last = min(by_year), max(by_year)
+        compact[str(horizon)] = {
+            "start": first,
+            "projected_share": [by_year.get(year) for year in range(first, last + 1)],
+        }
+    return compact
 
 
 def _with_skill(validation: dict | None, skills: dict, key: str) -> dict | None:

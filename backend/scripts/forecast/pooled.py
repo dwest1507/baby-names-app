@@ -347,6 +347,20 @@ def backtest_span(max_observed_year: int) -> range:
     return range(FIRST_BACKTEST_ORIGIN, max_observed_year - H + 1)
 
 
+def track_record_origins(max_observed_year: int) -> range:
+    """The origins a track record is built from: the span, and those after it.
+
+    An origin after the span has not had its five-year window close, but its
+    shorter horizons have — on the 2025 database, 2024 can already be checked
+    one year ahead and 2021 four. Without them every horizon but the fifth
+    would stop short of the newest year. They are *fitted* origins, not
+    *scored* ones: skill, `BacktestTally` and `model_evaluation` are defined on
+    closed five-year windows, and those stay `backtest_span`'s alone. See
+    docs/adr/0012-a-track-record-replaces-the-holdout-on-the-page.md.
+    """
+    return range(FIRST_BACKTEST_ORIGIN, max_observed_year)
+
+
 def training_origins(origin: int) -> range:
     """The origins a fit made at `origin` is allowed to learn from.
 

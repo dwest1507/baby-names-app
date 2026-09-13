@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Area,
   CartesianGrid,
@@ -9,6 +9,7 @@ import {
   type DefaultLegendContentProps,
   Legend,
   Line,
+  ReferenceArea,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -17,6 +18,8 @@ import {
   YAxis,
 } from 'recharts'
 import type { NameType, ValueType } from 'recharts/types/component/DefaultTooltipContent'
+import type { MouseHandlerDataParam } from 'recharts/types/synchronisation/types'
+import Button from '@/components/ui/Button'
 import type { ForecastPayload } from '@/lib/api'
 import {
   AXIS_LINE,
@@ -191,8 +194,124 @@ export function buildChartRows(payload: ForecastPayload): {
   return { rows, forecastStart: lastHistoryYear }
 }
 
+/** The years a visitor has zoomed to, in either order. */
+export interface YearRange {
+  from: number
+  to: number
+}
+
+export interface ChartDomain {
+  x: [number, number]
+  y: [number, number]
+}
+
+/** Space left above and below a zoomed view's values, as a share of their spread. */
+const ZOOM_HEADROOM = 0.05
+
+/** Every value a row draws: its lines and both edges of each band. */
+function drawnValues(row: Row): number[] {
+  return [row.history, row.forecast, ...(row.ci80 ?? []), ...(row.ci95 ?? [])].filter(
+    (value): value is number => value !== undefined
+  )
+}
+
+/**
+ * The axes' extent for a selection of years, or for the full chart when there
+ * is no selection.
+ */
+export function zoomDomain(rows: Row[], selection: YearRange | null): ChartDomain | null {
+  if (selection === null) {
+    const values = rows.flatMap(drawnValues)
+    return {
+      x: [rows[0].year, rows[rows.length - 1].year],
+      y: [0, Math.max(...values)],
+    }
+  }
+
+  const from = Math.min(selection.from, selection.to)
+  const to = Math.max(selection.from, selection.to)
+  if (to - from < 1) return null
+
+  // Refit to what is visible, so zooming reveals detail rather than magnifying
+  // whitespace. A little headroom keeps the lines off the plot's edges.
+  const values = rows.filter((row) => row.year >= from && row.year <= to).flatMap(drawnValues)
+  if (values.length === 0) return null
+  const low = Math.min(...values)
+  const high = Math.max(...values)
+  const pad = (high - low) * ZOOM_HEADROOM || high * ZOOM_HEADROOM
+  return { x: [from, to], y: [Math.max(0, low - pad), high + pad] }
+}
+
+/** How much one wheel step narrows the visible years; zooming out undoes it. */
+const WHEEL_STEP = 0.8
+
+/**
+ * The years visible after one wheel step about `anchor`, the year under the
+ * pointer, which stays where it was across the plot. `null` is the full range:
+ * zooming out never reaches past the data, and zooming in stops rather than
+ * producing a view `zoomDomain` would reject.
+ */
+export function wheelZoom(
+  rows: Row[],
+  current: YearRange | null,
+  anchor: number,
+  direction: 'in' | 'out'
+): YearRange | null {
+  const first = rows[0].year
+  const last = rows[rows.length - 1].year
+  const from = current === null ? first : Math.min(current.from, current.to)
+  const to = current === null ? last : Math.max(current.from, current.to)
+
+  const factor = direction === 'in' ? WHEEL_STEP : 1 / WHEEL_STEP
+  const next = {
+    from: Math.max(first, anchor - (anchor - from) * factor),
+    to: Math.min(last, anchor + (to - anchor) * factor),
+  }
+
+  if (next.from <= first && next.to >= last) return null
+  if (next.to - next.from < 1) return current
+  return next
+}
+
 export default function TrendChart({ payload }: TrendChartProps) {
   const { rows, forecastStart } = useMemo(() => buildChartRows(payload), [payload])
+
+  const [zoom, setZoom] = useState<YearRange | null>(null)
+  // Where a drag started and where the pointer is now, while the button is held.
+  const [drag, setDrag] = useState<YearRange | null>(null)
+  const hoveredYear = useRef<number | undefined>(undefined)
+  const plotRef = useRef<HTMLDivElement>(null)
+
+  // A zoom that no longer fits the rows — a gap, or another name's years —
+  // shows the full range rather than nothing.
+  const zoomedDomain = zoom === null ? null : zoomDomain(rows, zoom)
+  const domain = zoomedDomain ?? zoomDomain(rows, null)
+  const activeZoom = zoomedDomain === null ? null : zoom
+
+  // React registers wheel listeners as passive, and a passive listener cannot
+  // stop the page scrolling while the chart zooms. Once there is nothing left
+  // to zoom the event goes through and the page scrolls as usual.
+  useEffect(() => {
+    const element = plotRef.current
+    if (element === null) return
+    const onWheel = (event: WheelEvent) => {
+      const anchor = hoveredYear.current
+      if (anchor === undefined || event.deltaY === 0) return
+      const next = wheelZoom(rows, activeZoom, anchor, event.deltaY < 0 ? 'in' : 'out')
+      if (next === activeZoom || (next !== null && zoomDomain(rows, next) === null)) return
+      event.preventDefault()
+      setZoom(next)
+    }
+    element.addEventListener('wheel', onWheel, { passive: false })
+    return () => element.removeEventListener('wheel', onWheel)
+  }, [rows, activeZoom])
+
+  const yearAt = (state: MouseHandlerDataParam) =>
+    state.activeLabel === undefined ? undefined : Number(state.activeLabel)
+
+  const yTickDecimals = domain
+    ? Math.min(4, Math.max(2, Math.ceil(-Math.log10((domain.y[1] - domain.y[0]) / 5))))
+    : 2
 
   const hasForecast = payload.forecast.length > 0
 
@@ -213,116 +332,165 @@ export default function TrendChart({ payload }: TrendChartProps) {
   const label95 = intervalLabel('0.95')
 
   return (
-    <div
-      className="h-[440px] w-full"
-      role="img"
-      aria-label={`Popularity trend and forecast for ${payload.name}`}
-    >
-      <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={rows} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
-          <CartesianGrid stroke={GRID_STROKE} vertical={false} />
-          <XAxis
-            dataKey="year"
-            tick={AXIS_TICK}
-            axisLine={AXIS_LINE}
-            tickLine={false}
-            type="number"
-            domain={['dataMin', 'dataMax']}
-            tickCount={10}
-          />
-          <YAxis
-            tick={AXIS_TICK}
-            axisLine={false}
-            tickLine={false}
-            tickFormatter={(v: number) => `${v.toFixed(2)}%`}
-            width={64}
-          />
-          <Tooltip
-            content={(props) => <TrendTooltip {...props} label80={label80} label95={label95} />}
-          />
-          {/* In recharts child order is paint order, and the bands have to be
+    <div className="relative">
+      <div
+        ref={plotRef}
+        className="h-[440px] w-full select-none"
+        role="img"
+        aria-label={`Popularity trend and forecast for ${payload.name}`}
+      >
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart
+            data={rows}
+            margin={{ top: 8, right: 16, bottom: 8, left: 8 }}
+            style={{ cursor: 'crosshair' }}
+            onMouseDown={(state) => {
+              const year = yearAt(state)
+              if (year !== undefined) setDrag({ from: year, to: year })
+            }}
+            onMouseMove={(state) => {
+              const year = yearAt(state)
+              hoveredYear.current = year
+              if (year !== undefined) setDrag((current) => current && { ...current, to: year })
+            }}
+            onMouseUp={(state) => {
+              if (drag === null) return
+              const selection = { from: drag.from, to: yearAt(state) ?? drag.to }
+              setDrag(null)
+              if (zoomDomain(rows, selection) !== null) setZoom(selection)
+            }}
+            onMouseLeave={() => {
+              hoveredYear.current = undefined
+              setDrag(null)
+            }}
+          >
+            <CartesianGrid stroke={GRID_STROKE} vertical={false} />
+            <XAxis
+              dataKey="year"
+              tick={AXIS_TICK}
+              axisLine={AXIS_LINE}
+              tickLine={false}
+              type="number"
+              domain={domain?.x ?? ['dataMin', 'dataMax']}
+              allowDataOverflow
+              allowDecimals={false}
+              tickCount={10}
+            />
+            <YAxis
+              tick={AXIS_TICK}
+              axisLine={false}
+              tickLine={false}
+              tickFormatter={(v: number) => `${v.toFixed(yTickDecimals)}%`}
+              domain={domain?.y ?? [0, 'auto']}
+              allowDataOverflow={activeZoom !== null}
+              width={64}
+            />
+            <Tooltip
+              content={(props) => <TrendTooltip {...props} label80={label80} label95={label95} />}
+            />
+            {/* In recharts child order is paint order, and the bands have to be
               painted beneath the lines. The legend is sorted separately so it
               reads in the order the chart is understood instead. */}
-          <Legend
-            wrapperStyle={{ fontSize: 12, color: '#8a8f98' }}
-            iconSize={10}
-            content={BandLegend}
-            itemSorter={(item) => LEGEND_ORDER.indexOf(item.dataKey as keyof Row)}
-          />
+            <Legend
+              wrapperStyle={{ fontSize: 12, color: '#8a8f98' }}
+              iconSize={10}
+              content={BandLegend}
+              itemSorter={(item) => LEGEND_ORDER.indexOf(item.dataKey as keyof Row)}
+            />
 
-          {hasForecast && (
-            <Area
-              dataKey="ci95"
-              name={label95}
-              stroke="none"
-              fill={CHART_COLORS.forecast}
-              fillOpacity={BAND_FILL_OPACITY.ci95}
+            {hasForecast && (
+              <Area
+                dataKey="ci95"
+                name={label95}
+                stroke="none"
+                fill={CHART_COLORS.forecast}
+                fillOpacity={BAND_FILL_OPACITY.ci95}
+                connectNulls={false}
+                isAnimationActive={false}
+                legendType="rect"
+                tooltipType="none"
+              />
+            )}
+            {hasForecast && (
+              <Area
+                dataKey="ci80"
+                name={label80}
+                stroke="none"
+                fill={CHART_COLORS.forecast}
+                fillOpacity={BAND_FILL_OPACITY.ci80}
+                connectNulls={false}
+                isAnimationActive={false}
+                legendType="rect"
+                tooltipType="none"
+              />
+            )}
+
+            <Line
+              dataKey="history"
+              name="Historical"
+              stroke={CHART_COLORS.history}
+              strokeWidth={2}
+              dot={false}
+              activeDot={{ r: 4 }}
               connectNulls={false}
               isAnimationActive={false}
-              legendType="rect"
-              tooltipType="none"
             />
-          )}
-          {hasForecast && (
-            <Area
-              dataKey="ci80"
-              name={label80}
-              stroke="none"
-              fill={CHART_COLORS.forecast}
-              fillOpacity={BAND_FILL_OPACITY.ci80}
-              connectNulls={false}
-              isAnimationActive={false}
-              legendType="rect"
-              tooltipType="none"
-            />
-          )}
-
-          <Line
-            dataKey="history"
-            name="Historical"
-            stroke={CHART_COLORS.history}
-            strokeWidth={2}
-            dot={false}
-            activeDot={{ r: 4 }}
-            connectNulls={false}
-            isAnimationActive={false}
-          />
-          {hasForecast && (
-            /* The band is what the chart is really saying; the central line
+            {hasForecast && (
+              /* The band is what the chart is really saying; the central line
                is one path through it. Drawn thinner than the history it
                continues and without the point markers that would read as
                five measured values — but not dimmer than its own fill, or it
                disappears into the band it sits in. See
                docs/adr/0011-conformal-bands-keyed-by-strata.md. */
-            <Line
-              dataKey="forecast"
-              name="Forecast"
-              stroke={CHART_COLORS.forecast}
-              strokeWidth={1.25}
-              strokeOpacity={0.92}
-              strokeDasharray="6 4"
-              dot={false}
-              activeDot={{ r: 3 }}
-              connectNulls={false}
-              isAnimationActive={false}
-            />
-          )}
+              <Line
+                dataKey="forecast"
+                name="Forecast"
+                stroke={CHART_COLORS.forecast}
+                strokeWidth={1.25}
+                strokeOpacity={0.92}
+                strokeDasharray="6 4"
+                dot={false}
+                activeDot={{ r: 3 }}
+                connectNulls={false}
+                isAnimationActive={false}
+              />
+            )}
 
-          {hasForecast && forecastStart !== undefined && (
-            <ReferenceLine
-              x={forecastStart}
-              stroke="rgba(255, 255, 255, 0.2)"
-              strokeDasharray="3 3"
-              label={{
-                value: 'Forecast →',
-                fill: '#8a8f98',
-                fontSize: 11,
-                position: 'insideTopRight',
-              }}
-            />
-          )}
-        </ComposedChart>
-      </ResponsiveContainer>
+            {hasForecast && forecastStart !== undefined && (
+              <ReferenceLine
+                x={forecastStart}
+                stroke="rgba(255, 255, 255, 0.2)"
+                strokeDasharray="3 3"
+                label={{
+                  value: 'Forecast →',
+                  fill: '#8a8f98',
+                  fontSize: 11,
+                  position: 'insideTopRight',
+                }}
+              />
+            )}
+
+            {drag !== null && drag.from !== drag.to && (
+              <ReferenceArea
+                x1={drag.from}
+                x2={drag.to}
+                fill="rgba(255, 255, 255, 0.08)"
+                stroke="none"
+              />
+            )}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+      {activeZoom !== null && (
+        <Button
+          variant="secondary"
+          size="sm"
+          className="absolute top-2 right-4"
+          onClick={() => setZoom(null)}
+        >
+          Reset zoom
+        </Button>
+      )}
     </div>
   )
 }

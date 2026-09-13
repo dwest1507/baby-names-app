@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildChartRows } from '@/components/charts/TrendChart'
+import { buildChartRows, wheelZoom, zoomDomain } from '@/components/charts/TrendChart'
 import type { ForecastPayload } from '@/lib/api'
 
 function payload(overrides: Partial<ForecastPayload> = {}): ForecastPayload {
@@ -95,5 +95,94 @@ describe('buildChartRows', () => {
       2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026, 2027,
     ])
     expect(rows.find((row) => row.year === 2021)?.history).toBeUndefined()
+  })
+})
+
+describe('zoomDomain', () => {
+  it('restores the full range when there is no selection', () => {
+    const { rows } = buildChartRows(payload())
+
+    const domain = zoomDomain(rows, null)
+
+    expect(domain?.x).toEqual([2022, 2027])
+    // The full view keeps its zero baseline and reaches the top of the outer band.
+    expect(domain?.y[0]).toBe(0)
+    expect(domain?.y[1]).toBeGreaterThanOrEqual(0.3)
+  })
+
+  it('refits the vertical axis to the years selected, whichever way they were dragged', () => {
+    // Recorded shares climb from 0.10% in 2022 to 0.13% in 2025 and the bands
+    // reach 0.30% after. Zoomed to 2022–2023 the axis should frame 0.10–0.11%,
+    // not magnify the whitespace up to the band.
+    const { rows } = buildChartRows(payload())
+
+    const domain = zoomDomain(rows, { from: 2023, to: 2022 })
+
+    expect(domain?.x).toEqual([2022, 2023])
+    const [low, high] = domain!.y
+    expect(low).toBeGreaterThan(0.05)
+    expect(low).toBeLessThanOrEqual(0.1)
+    expect(high).toBeGreaterThanOrEqual(0.11)
+    expect(high).toBeLessThan(0.12)
+  })
+
+  it('rejects a selection narrower than one year', () => {
+    // A click without a drag starts and ends on the same year; zooming to it
+    // would leave nothing to draw.
+    const { rows } = buildChartRows(payload())
+
+    expect(zoomDomain(rows, { from: 2024, to: 2024 })).toBeNull()
+    expect(zoomDomain(rows, { from: 2024, to: 2024.5 })).toBeNull()
+    expect(zoomDomain(rows, { from: 2024, to: 2025 })).not.toBeNull()
+  })
+
+  it('rejects a selection with nothing drawn in it', () => {
+    // Years with no recorded births are empty rows: there is no value to fit
+    // the vertical axis to.
+    const { rows } = buildChartRows(
+      payload({
+        history: [
+          { year: 2010, value: 0.001 },
+          { year: 2020, value: 0.002 },
+          { year: 2025, value: 0.003 },
+        ],
+      })
+    )
+
+    expect(zoomDomain(rows, { from: 2012, to: 2016 })).toBeNull()
+  })
+})
+
+describe('wheelZoom', () => {
+  // 1990–2025 recorded, 2026–2027 forecast.
+  const { rows } = buildChartRows(
+    payload({
+      history: Array.from({ length: 36 }, (_, i) => ({ year: 1990 + i, value: 0.001 })),
+    })
+  )
+
+  it('zooms in about the year under the pointer', () => {
+    const zoomed = wheelZoom(rows, null, 2020, 'in')!
+
+    const [from, to] = [zoomed.from, zoomed.to]
+    expect(to - from).toBeLessThan(2027 - 1990)
+    // The year under the pointer stays where it was across the plot.
+    expect((2020 - from) / (to - from)).toBeCloseTo((2020 - 1990) / (2027 - 1990), 6)
+  })
+
+  it('returns to the full range once zooming out reaches it', () => {
+    let range = wheelZoom(rows, null, 2020, 'in')
+    range = wheelZoom(rows, range, 2020, 'out')
+    range = wheelZoom(rows, range, 2020, 'out')
+
+    expect(range).toBeNull()
+  })
+
+  it('stops zooming in before the view is narrower than one year', () => {
+    let range: ReturnType<typeof wheelZoom> = null
+    for (let i = 0; i < 50; i++) range = wheelZoom(rows, range, 2020, 'in')
+
+    expect(range!.to - range!.from).toBeGreaterThanOrEqual(1)
+    expect(zoomDomain(rows, range)).not.toBeNull()
   })
 })

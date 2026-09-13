@@ -768,6 +768,77 @@ describe('SearchPage forecast presentation', () => {
     expect(tooltip.textContent).not.toMatch(/\de[-+]?\d/i)
   })
 
+  /** Years printed along the horizontal axis. */
+  function xAxisYears(): number[] {
+    return [
+      ...document.querySelectorAll(
+        '.recharts-xAxis-tick-labels .recharts-cartesian-axis-tick-value'
+      ),
+    ].map((tick) => Number(tick.textContent))
+  }
+
+  /** Press on one year, move to another and release, as a visitor dragging across the plot. */
+  async function dragAcross(from: number, to: number, range: [number, number]) {
+    const plot = document.querySelector('.recharts-wrapper')!
+    await hoverYear(from, range)
+    fireEvent.mouseDown(plot)
+    await hoverYear(to, range)
+    fireEvent.mouseUp(plot)
+  }
+
+  it('offers no reset control until the chart is zoomed', async () => {
+    await searchEmma()
+
+    expect(screen.queryByRole('button', { name: /reset zoom/i })).not.toBeInTheDocument()
+  })
+
+  it('zooms to the years dragged across, and resets to the full range', async () => {
+    // 145 years in 440 pixels leave the recent decades a few pixels wide.
+    await searchEmma()
+
+    await dragAcross(2000, 2010, [1986, 2030])
+
+    await waitFor(() => {
+      const years = xAxisYears()
+      expect(years.length).toBeGreaterThan(0)
+      expect(Math.min(...years)).toBeGreaterThanOrEqual(2000)
+      expect(Math.max(...years)).toBeLessThanOrEqual(2010)
+    })
+
+    await userEvent.click(screen.getByRole('button', { name: /reset zoom/i }))
+
+    await waitFor(() => expect(Math.min(...xAxisYears())).toBeLessThan(2000))
+    expect(screen.queryByRole('button', { name: /reset zoom/i })).not.toBeInTheDocument()
+  })
+
+  it('zooms in when the wheel turns over the plot', async () => {
+    await searchEmma()
+
+    await hoverYear(2020, [1986, 2030])
+    fireEvent.wheel(screen.getByLabelText(/trend and forecast for Emma/i), { deltaY: -100 })
+
+    await waitFor(() => expect(Math.min(...xAxisYears())).toBeGreaterThan(1986))
+    expect(screen.getByRole('button', { name: /reset zoom/i })).toBeInTheDocument()
+  })
+
+  it('labels a zoomed vertical axis finely enough to tell its ticks apart', async () => {
+    // Zoomed into a decade the shares differ in the third decimal place; at
+    // two decimals every tick would read the same.
+    await searchEmma()
+
+    await dragAcross(2000, 2003, [1986, 2030])
+
+    await waitFor(() => {
+      const labels = [
+        ...document.querySelectorAll(
+          '.recharts-yAxis-tick-labels .recharts-cartesian-axis-tick-value'
+        ),
+      ].map((tick) => tick.textContent)
+      expect(labels.length).toBeGreaterThan(1)
+      expect(new Set(labels).size).toBe(labels.length)
+    })
+  })
+
   it('draws no point markers on the forecast line', async () => {
     // A dot per year reads as five measurements. They are not measurements.
     // recharts hoists dots out of their series' layer, so they are identified

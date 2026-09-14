@@ -72,8 +72,8 @@ export default function ExplorePage() {
           Top Names
         </h1>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[#8a8f98]">
-          The most popular baby names for a given year and sex, ranked by the number of babies
-          registered with the Social Security Administration.
+          The most popular baby names for a given year and sex, ranked by the number of babies born,
+          according to the Social Security Administration.
         </p>
       </div>
 
@@ -108,18 +108,35 @@ export default function ExplorePage() {
           <label htmlFor="limit" className="mb-1.5 block text-xs text-[#8a8f98]">
             Show top
           </label>
-          <select
-            id="limit"
-            className={`${inputClass} w-24 appearance-none`}
-            value={limit}
-            onChange={(e) => setLimit(Number(e.target.value))}
-          >
-            {[10, 20, 30, 50, 100].map((n) => (
-              <option key={n} value={n}>
-                {n}
-              </option>
-            ))}
-          </select>
+          <div className="relative">
+            <select
+              id="limit"
+              className={`${inputClass} w-24 cursor-pointer appearance-none bg-[#0a0a0c] pr-8 [color-scheme:dark] [&>option]:bg-[#0a0a0c] [&>option]:text-[#ededef]`}
+              style={{ colorScheme: 'dark' }}
+              value={limit}
+              onChange={(e) => setLimit(Number(e.target.value))}
+            >
+              {[10, 20, 30, 50, 100].map((n) => (
+                <option key={n} value={n} className="bg-[#0a0a0c] text-[#ededef]">
+                  {n}
+                </option>
+              ))}
+            </select>
+            <svg
+              className="pointer-events-none absolute top-1/2 right-2.5 h-4 w-4 -translate-y-1/2 text-[#8a8f98]"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M19 9l-7 7-7-7"
+              />
+            </svg>
+          </div>
         </div>
       </div>
 
@@ -142,8 +159,7 @@ export default function ExplorePage() {
         <div className="space-y-8">
           <Card variant="glass" className="p-6">
             <h2 className="mb-4 text-sm font-medium text-[#ededef]">
-              Top {names.length} {sex === 'F' ? 'female' : 'male'} names of {year} — babies
-              registered
+              Top {names.length} {sex === 'F' ? 'female' : 'male'} names of {year} — babies born
             </h2>
             <TopNamesChart data={names} />
           </Card>

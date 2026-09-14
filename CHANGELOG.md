@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/dwest1507/baby-names-app/compare/baby-names-app-v1.4.0...baby-names-app-v1.4.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **frontend:** improve top names dropdown readability, copy, and forecast interval band continuity ([#71](https://github.com/dwest1507/baby-names-app/issues/71)) ([645a1c3](https://github.com/dwest1507/baby-names-app/commit/645a1c3f8a4ea2f1973df939d589f6a7a21d6080))
+
 ## [1.4.0](https://github.com/dwest1507/baby-names-app/compare/baby-names-app-v1.3.0...baby-names-app-v1.4.0) (2026-09-13)
 
 

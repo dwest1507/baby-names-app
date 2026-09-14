@@ -34,13 +34,14 @@ describe('buildChartRows', () => {
 
     expect(forecastStart).toBe(2025)
     expect(rows.filter((row) => row.ci80 !== undefined).map((row) => row.year)).toEqual([
-      2026, 2027,
+      2025, 2026, 2027,
     ])
-    // The forecast line reaches back to the last observed point so the two
-    // lines meet rather than leaving a visible gap.
-    expect(rows.find((row) => row.year === 2025)?.forecast).toBe(
-      rows.find((row) => row.year === 2025)?.history
-    )
+    // The forecast line and interval bands reach back to the last observed point
+    // so they meet rather than leaving a visible gap.
+    const last = rows.find((row) => row.year === 2025)
+    expect(last?.forecast).toBe(last?.history)
+    expect(last?.ci80).toEqual([last?.history, last?.history])
+    expect(last?.ci95).toEqual([last?.history, last?.history])
   })
 
   it('keeps recorded history when a stale artifact forecasts a year that has happened', () => {
@@ -65,8 +66,36 @@ describe('buildChartRows', () => {
     const observed = rows.find((row) => row.year === 2025)
 
     expect(observed?.history).toBeCloseTo(0.13, 10)
+    expect(observed?.forecast).toBe(observed?.history)
+    expect(observed?.ci80).toEqual([observed?.history, observed?.history])
+    expect(observed?.ci95).toEqual([observed?.history, observed?.history])
+    expect(rows.filter((row) => row.ci80 !== undefined).map((row) => row.year)).toEqual([
+      2025, 2026,
+    ])
+  })
+
+  it('does not connect forecast or intervals when all forecast years are in the past', () => {
+    const pastOnly = payload({
+      forecast: [
+        {
+          year: 2025,
+          mean: 0.09,
+          projected_rank: 12,
+          lo80: 0.08,
+          hi80: 0.1,
+          lo95: 0.07,
+          hi95: 0.11,
+        },
+      ],
+    })
+
+    const { rows } = buildChartRows(pastOnly)
+    const observed = rows.find((row) => row.year === 2025)
+
+    expect(observed?.history).toBeCloseTo(0.13, 10)
+    expect(observed?.forecast).toBeUndefined()
     expect(observed?.ci80).toBeUndefined()
-    expect(rows.filter((row) => row.ci80 !== undefined).map((row) => row.year)).toEqual([2026])
+    expect(rows.filter((row) => row.ci80 !== undefined)).toHaveLength(0)
   })
 
   it('draws only recorded history and the forecast, not what past forecasts said', () => {

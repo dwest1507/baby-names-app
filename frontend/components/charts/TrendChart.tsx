@@ -162,8 +162,10 @@ export function buildChartRows(payload: ForecastPayload): {
   // arrived, whose forecast starts on a year the history now covers. Recorded
   // history wins.
   const lastHistoryYear = payload.history[payload.history.length - 1]?.year
+  let hasFutureForecast = false
   for (const point of payload.forecast) {
     if (lastHistoryYear !== undefined && point.year <= lastHistoryYear) continue
+    hasFutureForecast = true
     byYear.set(point.year, {
       year: point.year,
       forecast: toPercent(point.mean),
@@ -172,10 +174,14 @@ export function buildChartRows(payload: ForecastPayload): {
     })
   }
 
-  // Connect the forecast line to the last historical point
-  if (lastHistoryYear !== undefined && payload.forecast.length > 0) {
+  // Connect the forecast line and interval bands to the last historical point
+  if (lastHistoryYear !== undefined && hasFutureForecast) {
     const last = byYear.get(lastHistoryYear)
-    if (last?.history !== undefined) last.forecast = last.history
+    if (last?.history !== undefined) {
+      last.forecast = last.history
+      last.ci80 = [last.history, last.history]
+      last.ci95 = [last.history, last.history]
+    }
   }
 
   // A year with no row is a year in which no births were recorded. Emit it as

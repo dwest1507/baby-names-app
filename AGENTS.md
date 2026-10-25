@@ -25,6 +25,11 @@ cd backend && uv run pytest tests/test_queries.py -k some_test
 cd frontend && npx vitest run path/to/file.test.tsx
 ```
 
+Regenerate `frontend/package-lock.json` with CI's npm 10 (`npx npm@10 install --package-lock-only`)
+whenever it changes, including on Dependabot npm PRs: newer npm prunes the nested
+`vite-tsconfig-paths/node_modules/typescript@5.x` that tsconfck's optional peer needs, and npm 10's
+`npm ci` then rejects the lock as out of sync.
+
 The AI chatbot needs `backend/.env` with `GROQ_API_KEY=...` to function; without it chat
 endpoints return a "chatbot unavailable" error rather than failing at startup.
 

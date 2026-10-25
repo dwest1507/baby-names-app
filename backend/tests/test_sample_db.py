@@ -157,7 +157,6 @@ def test_precompute_batch_reads_the_names_table_once_rather_than_per_name(tmp_pa
     """
     import scripts.precompute_forecasts as precompute_module
     from scripts.make_sample_db import build
-    from scripts.precompute_forecasts import run as precompute
 
     path = tmp_path / "names.db"
     build(str(path))
@@ -172,7 +171,7 @@ def test_precompute_batch_reads_the_names_table_once_rather_than_per_name(tmp_pa
 
     precompute_module.sqlite3.connect = tracing_connect
     try:
-        precompute(str(path))
+        precompute_module.run(str(path))
     finally:
         precompute_module.sqlite3.connect = real_connect
 
